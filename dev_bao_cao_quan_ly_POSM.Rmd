@@ -1,0 +1,567 @@
+---
+title: "Báo cáo quản lý POSM"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        theme: flatly
+---
+
+<style>
+    body .main-container {
+        max-width: 90%;
+    }
+</style>
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_ymd <- function(x, which = "ymd", by = c("work_date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    x[[by]] <- as.Date(x[[by]], "%d/%m/%Y")
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("d", which)) {
+        x$date <- lubridate::date(x[[by]])
+    }
+    x
+}
+
+gen_image_href <- function(img, site, width, height) {
+  
+  sapply(img, function(x) {
+    if (is.na(x) || x %in% c("", "NA")) return("")
+    x <- gsub("\\[formfile\\]", paste0(RTA::get_project_url(site), "/tmp/"), x)
+    paste0("<img src='", x, paste0("'width='", width, "' height='", height, "'>"))
+  })
+  
+}
+		 
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("readr", "tidyr", "dplyr", "shiny", "xlsx", "RTA")
+sapply(pkgs, require, character.only = TRUE)
+
+switch(
+    sys_user,
+    {library("DT")},
+    shiny = {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+## -----------------------------------------------------------------------------
+## import data
+
+switch(
+    sys_user,
+    {
+        data_dir <- "~/MEGAsync/RTA/KINGSMEN/data/"
+        try(msr_posm <- read_csv(paste0(data_dir, "MSR_POSM_DEMO/MSR_POSM_DEMO.csv"), 
+                               col_types= cols(.default = "c")))
+        try(msr_posm_rr <- read_csv(paste0(data_dir, "MSR_POSM_DEMO/posm_rr.csv"), 
+                                  col_types= cols(.default = "c")))
+        try(msr_handover_posm <- read_csv(paste0(data_dir, "MSR_HANDOVER_POSM_DEMO/MSR_HANDOVER_POSM_DEMO.csv"), 
+                               col_types= cols(.default = "c")))
+        try(msr_handover_posm_rr <- read_csv(paste0(data_dir, "MSR_HANDOVER_POSM_DEMO/posm_rr.csv"), 
+                                       col_types= cols(.default = "c")))
+        try(msr_monitor_posm <- read_csv(paste0(data_dir, "MSR_MONITOR_POSM_DEMO/MSR_MONITOR_POSM_DEMO.csv"), 
+                                       col_types= cols(.default = "c")))
+        try(msr_monitor_posm_rr <- read_csv(paste0(data_dir, "MSR_MONITOR_POSM_DEMO/posm_rr.csv"), 
+                                       col_types= cols(.default = "c")))
+
+
+    }, 
+    shiny = {
+        try(msr_posm <- get_family_data("C011", "MSR_POSM_DEMO"))
+        try(msr_posm_rr <- get_family_data("C011", "MSR_POSM_DEMO", "posm_rr"))
+        try(msr_handover_posm <- get_family_data("C011",  "MSR_HANDOVER_POSM_DEMO"))
+        try(msr_handover_posm_rr <- get_family_data("C011", "MSR_HANDOVER_POSM_DEMO","posm_rr"))
+        try(msr_monitor_posm <- get_family_data("C011", "MSR_MONITOR_POSM_DEMO"))
+        try(msr_monitor_posm_rr <- get_family_data("C011",  "MSR_MONITOR_POSM_DEMO", "posm_rr"))
+    }
+)
+
+        try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+        try(msr_store <- get_dm_data("C011", "MSR_store"))
+        try(msr_storenew <- get_dm_data("C011", "MSR_newedit_store"))
+        try(msr_product <- get_dm_data("C011", "MSR_product"))
+        try(msr_posm_id <- get_dm_data("C011", "MSR_posm"))
+
+```
+
+
+```{r - cleaning data, include=FALSE}
+msr_posm_rr <- left_join(msr_posm_rr, msr_posm, by = "instanceID")
+msr_posm_rr <- replace_with_na(msr_posm_rr)
+
+msr_handover_posm_rr <- left_join(msr_handover_posm_rr, msr_handover_posm, by = "instanceID")
+msr_handover_posm_rr <- replace_with_na(msr_handover_posm_rr)
+
+msr_monitor_posm_rr <- left_join(msr_monitor_posm_rr, msr_monitor_posm, by = "instanceID")
+msr_monitor_posm_rr <- replace_with_na(msr_monitor_posm_rr)
+
+msr_staff <- filter(msr_staff, marked_as_deleted == 0)
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+#msr_staff <- filter(msr_staff, !grepl("dgw_vthieu", username))
+#msr_staff <- filter(msr_staff, !grepl("dgw_vthieu|dgw_lnhduy", username))
+msr_staff <- filter(msr_staff, !grepl("Inactive", staff_status))
+
+#msr_posm_rr <- filter(msr_posm_rr, grepl("^dgw", username))
+#msr_posm_rr <- filter(msr_newedit, !grepl("dgw_vthieu", username))
+#msr_newedit <- filter(msr_newedit, !grepl("dgw_vthieu|dgw_lnhduy", username))
+
+#msr_handover_posm_rr <- filter(msr_handover_posm_rr, grepl("^dgw", username))
+#msr_monitor_posm_rr <- filter(msr_monitor_posm_rr, grepl("^dgw", username))
+
+msr_product <- filter(msr_product, marked_as_deleted == 0)
+msr_store <- filter(msr_store, marked_as_deleted == 0)
+msr_storenew <- filter(msr_storenew, marked_as_deleted == 0)
+
+msr_store <- bind_rows(msr_store, msr_storenew)
+
+msr_posm_id <- filter(msr_posm_id, marked_as_deleted == 0)
+
+```
+
+```{r}
+cols <- c("region_lb", "staff_region", "staff_id", "fullname", "work_date", "work_time", 
+          "store_id", "store_lb", "store_add", "store_phone", "store_owner_name", "posm_id", "posm_lb", "posm_qty", "image1", "posm_note", "effective", "content_share", "evaluate", "eval_detail", "image4", "remark")
+
+colnames <- make_dict(cols, c("Khu vực", "Địa bàn", "Mã SalesRep", "Tên SalesRep", "Ngày", "Thời gian", "Mã NT", "Tên NT", "Địa chỉ", "SĐT", "Chủ NT", "Mã POSM", "Tên POSM", "Số lượng", "Hình ảnh", "Ghi chú", "Hiệu quả", "Chia sẻ", "Đánh giá", "Chi tiết", "Hình ảnh 1", "Ghi chú"))
+```
+
+```{r - select column, include = FALSE}
+msr_posm_rr$effective <- ifelse(msr_posm_rr$effective %in% "1", "Có hiệu quả", "Không hiệu quả")
+
+msr_monitor_posm_rr$check <- "m"
+msr_monitor_posm_rr$evaluate <- ifelse(msr_monitor_posm_rr$evaluate %in% "1", "Đúng quy cách", "Sai quy cách")
+
+msr_handover_posm_rr$check <- "h"
+
+final <- bind_rows(msr_posm_rr, msr_monitor_posm_rr)
+final <- bind_rows(final, msr_handover_posm_rr)
+
+store <- select(msr_store, store_phone, store_owner_name, region_lb, store_id)
+staff <- select(msr_staff, staff_id, supsd_id, suprsm_id, supasm_id, npp_id, staff_region)
+
+final <- left_join(final, store, by = "store_id")
+final <- left_join(final, staff, by = "staff_id")
+final <- mutate(final,
+                image1 = gen_image_href(image1, site = "C011", 130, 180),
+                image4 = gen_image_href(image4, site = "C011", 130, 180))
+final <- gen_ymd(final, "ymd")
+final$work_time <- substr(final$work_time, 1, 8)
+
+## filtering data by user role
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "dieulinh") {
+  	user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+  	#user_name <- 'dgw_vthieu'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        final <- filter(final, staff_id == user_id)
+        msr_staff <- filter(msr_staff, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        final <- filter(final, supasm_id == user_id)
+        msr_staff <- filter(msr_staff, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        final <- filter(final, suprsm_id == user_id)
+        msr_staff <- filter(msr_staff, suprsm_id == user_id)
+    }
+}
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2018:current_year()
+input_months <- c(1:12)
+#input_dates <- unique(c(msr_sales_remote$sales_date, msr_checkin$date))
+input_dates <- c(unique(final$date), Sys.Date())
+#input_weeks <- c(unique(msr_rr$week))
+input_weeks <- c(1:5)
+
+input_levels <- c("RSM", "ASM", "SR")
+
+input_RSM <- distinct(select(msr_staff, suprsm_id, suprsm_lb))
+input_RSM <- filter(input_RSM, suprsm_id != "", !is.na(suprsm_id))
+input_RSM <- c("Tất cả" = "All", make_dict(input_RSM$suprsm_lb, input_RSM$suprsm_id))
+
+input_ASM <- distinct(select(msr_staff, supasm_id, supasm_lb))
+input_ASM <- filter(input_ASM, supasm_id != "", !is.na(supasm_id))
+input_ASM <- c("Tất cả" = "All", make_dict(input_ASM$supasm_lb, input_ASM$supasm_id))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+		 
+
+```
+
+
+```{r reactive}
+re_filter <- reactive({
+  dta <- final
+
+    if (input$shown_by_ip == "select_month") {
+        
+        out <- filter(dta, month %in% input$month_ip, year %in% input$year_ip)
+
+        validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu trong khoảng thời gian này."))
+             
+        
+
+    } else if (input$shown_by_ip == "select_day") {
+
+        validate(
+          need(input$date_ip[1] <= input$date_ip[2],
+               "Khoảng thời gian bắt đầu phải nhỏ hơn khoảng thời gian kết thúc")
+        )
+
+        out <- filter(dta, date >= input$date_ip[1] & date <= input$date_ip[2])
+        
+        
+    }
+
+   
+    if (input$level_ip == "RSM") {
+	  out <- out
+	  if (input$RSM_input != "All") {  
+        out <- filter(out, suprsm_id %in% input$RSM_input)
+		}
+    }
+
+    if (input$level_ip == "ASM") {
+	  out <- out
+	  if (input$ASM_input != "All") {  
+        out <- filter(out, supasm_id %in% input$ASM_input)
+		}
+    }
+
+    if (input$level_ip == "SR") {
+	  out <- out
+	  if (input$SR_input != "All") {  
+        out <- filter(out, staff_id %in% input$SR_input)
+		}
+    }
+    validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu trong khoảng thời gian này.")
+        )
+out  
+})
+
+re_posm <- reactive({
+    dta <- re_filter()
+    out <- filter(dta, is.na(check))
+    out <- out %>% 
+               select(region_lb, staff_region, staff_id, fullname, work_date, work_time, 
+                      store_id, store_lb, store_add, store_phone, store_owner_name, posm_id, posm_lb, posm_qty, 
+                      image1, posm_note, effective, content_share)
+    names(out) <- encode(names(out), colnames)
+    out
+})
+
+re_monitor_posm <- reactive({
+    dta <- re_filter()
+    out <- filter(dta, check %in% "m")
+    out <- out %>% 
+               select(region_lb, staff_region, staff_id, fullname, work_date, work_time, 
+                      store_id, store_lb, store_add, store_phone, store_owner_name, posm_id, posm_lb, posm_qty, 
+                      image1, evaluate, eval_detail)
+    
+    names(out) <- encode(names(out), colnames)
+    out
+})
+
+re_handover_posm <- reactive({
+    dta <- re_filter()
+    out <- filter(dta, check %in% "h")
+    out <- out %>% 
+               select(region_lb, staff_region, staff_id, fullname, work_date, work_time, 
+                      store_id, store_lb, store_add, store_phone, store_owner_name, posm_id, posm_lb, posm_qty, 
+                      image1, image4, remark)
+    names(out) <- encode(names(out), colnames)
+    out
+})
+
+output$posm_tbl <- DT::renderDataTable(
+{re_posm()},
+class = "nowrap stripe hover cell-border",
+rownames = FALSE,
+escape = FALSE,
+#filter = "top",
+options = list(scrollX = TRUE,
+			   scrollY = "900px",
+               ordering = FALSE,
+               pageLength = 20,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$monitor_posm_tbl <- DT::renderDataTable(
+{re_monitor_posm()},
+class = "nowrap stripe hover cell-border",
+rownames = FALSE,
+escape = FALSE,
+#filter = "top",
+options = list(scrollX = TRUE,
+			   scrollY = "900px",
+               ordering = FALSE,
+               pageLength = 20,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$handover_posm_tbl <- DT::renderDataTable(
+{re_handover_posm()},
+class = "nowrap stripe hover cell-border",
+rownames = FALSE,
+escape = FALSE,
+#filter = "top",
+options = list(scrollX = TRUE,
+			   scrollY = "900px",
+               ordering = FALSE,
+               pageLength = 20,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$posm_xls <- downloadHandler(
+      filename = function() {
+        file_name <- "QUAN_LY_POSM"
+        paste(file_name, '.xlsx', sep='')
+    },
+    content = function(file) {
+        ## creation of the workbook
+        wb <- createWorkbook(type = "xlsx")
+
+        ## define style for workbook
+        title_style <- CellStyle(wb) +
+            Font(wb, heightInPoints = 14, color = "forestgreen", isBold = TRUE, underline = 0)
+
+        subtitle_style <- CellStyle(wb) +
+            Font(wb, heightInPoints = 12, isItalic = TRUE, isBold = FALSE)
+
+        table_rownames_style <- CellStyle(wb) +
+            Font(wb, isBold = FALSE)
+
+        table_colnames_style <- CellStyle(wb) +
+            Font(wb, isBold = TRUE) +
+            Alignment(wrapText = TRUE, horizontal = "ALIGN_LEFT") +
+            Border(color = "black", position = c("TOP", "BOTTOM"), pen = c("BORDER_THIN", "BORDER_THIN"))
+
+        table_content_style <- CellStyle(wb,
+                                         alignment = Alignment(wrapText = TRUE,
+                                                               horizontal = "ALIGN_CENTER"))
+
+
+        ## Add sheet content function
+        add_df_to_sheet <- function(df_table, sheet_object){
+            addDataFrame(
+                df_table,
+                sheet_object,
+                startRow = 4,
+                startColumn = 1,
+                colnamesStyle = table_colnames_style,
+                rownamesStyle = table_rownames_style,
+                colStyle = table_content_style,
+                row.names = FALSE)
+        }
+
+        xlsx_add_title <- function(sheet, row_index, title, title_style) {
+            rows <- createRow(sheet, rowIndex = row_index)
+            sheet_title <- createCell(rows, colIndex = 1)
+            setCellValue(sheet_title[[1, 1]], title)
+            setCellStyle(sheet_title[[1, 1]], title_style)
+
+        }
+
+        ## Create new sheet and add contents
+        sheet1 <- createSheet(wb, sheetName = "Theo dõi POSM")
+        sheet2 <- createSheet(wb, sheetName = "Giám sát POSM")
+        sheet3 <- createSheet(wb, sheetName = "Bàn giao POSM")
+
+
+        xlsx_add_title(sheet1, row_index = 2, title = "Theo dõi POSM", title_style = title_style)
+        xlsx_add_title(sheet2, row_index = 2, title = "Giám sát POSM", title_style = title_style)
+        xlsx_add_title(sheet3, row_index = 2, title = "Bàn giao POSM", title_style = title_style)
+
+        add_df_to_sheet(re_posm(), sheet1)
+        add_df_to_sheet(re_monitor_posm(), sheet2)
+        add_df_to_sheet(re_handover_posm(), sheet3)
+
+        setColumnWidth(sheet1, colIndex = c(1:ncol(re_posm())), colWidth = 20)
+        setColumnWidth(sheet2, colIndex = c(1:ncol(re_monitor_posm())), colWidth = 20)
+        setColumnWidth(sheet3, colIndex = c(1:ncol(re_handover_posm())), colWidth = 20)
+
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)   
+
+```
+
+Inputs {.sidebar}
+================================================
+
+```{r input-panel}
+
+radioButtons(
+            inputId = "shown_by_ip",
+            label = tags$strong("Chọn xem dữ liệu theo:"),
+            choices = c("Ngày" = "select_day",
+                        "Tháng" = "select_month"),
+  			selected = "select_month"
+        )
+
+
+tags$br()
+
+
+conditionalPanel(
+        condition = "input.shown_by_ip == 'select_day'",
+      dateRangeInput(
+                    inputId = "date_ip",
+                    label = "Chọn ngày:",
+                    min = min(input_dates),
+                    max = Sys.Date(),
+                    start = min(input_dates),
+                    end = Sys.Date(),
+                    format = "dd-mm-yyyy",
+                    separator = "đến",
+                    language = "vi"
+        )
+      
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+                          inputId = "year_ip",
+                          label = tags$strong("Chọn năm:"),
+                          choices = input_years,
+                          selected = current_year()
+              )
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+                            inputId = "month_ip",
+                            label = tags$strong("Chọn tháng:"),
+                            choices = input_months,
+                            selected = current_month()
+                )
+)
+ 
+tags$br()
+
+fluidRow(
+  column(
+    width = 12,
+    radioButtons(
+               inputId ="level_ip",
+               label = tags$strong("Chọn cấp bậc:"),
+               choices = input_levels, 
+               selected = "SR")
+  )
+)
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.level_ip =='SR'",
+      selectInput(
+                inputId ="SR_input",
+                label ="Chọn SalesRep: ",
+                choice = input_SR)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='ASM'",
+      selectInput(
+                inputId ="ASM_input",
+                label ="Chọn ASM: ",
+                choice = input_ASM)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='RSM'",
+      selectInput(
+                inputId ="RSM_input",
+                label ="Chọn RSM: ",
+                choice = input_RSM)
+      )
+      
+    )
+  )
+
+tags$br()
+
+fluidRow(
+    column(
+        width = 2,
+        downloadButton(outputId = "posm_xls", label = "xlsx")
+          
+    )
+)
+```
+
+
+Theo dõi POSM
+====================================================
+```{r}
+dataTableOutput("posm_tbl")
+```
+
+
+Giám sát POSM
+====================================================
+```{r}
+dataTableOutput("monitor_posm_tbl")
+```
+
+
+Bàn giao POSM
+====================================================
+```{r}
+dataTableOutput("handover_posm_tbl")
+```
+

@@ -1,0 +1,1455 @@
+---
+title: "Báo cáo KPI cho SalesRep"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        orientation: rows
+        #vertical_layout: scroll
+        theme: flatly
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999, digits = 9) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+
+
+```
+
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_ymd <- function(x, which = "ymd", by = c("work_date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    
+    x[[by]] <- lubridate::dmy(x[[by]])
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("d", which)) {
+        x$date <- lubridate::date(x[[by]])
+    }
+    x
+}
+
+deduct <- function(var1, var2) {
+  var2 <- var2*(-1)
+  out <- mapply(sum, var1, var2, MoreArgs = list(na.rm = TRUE))
+  out
+}
+
+render_table <- function(data) {
+  datatable(data,
+            class = "nowrap stripe hover cell-border",
+            rownames = FALSE,
+            #filter = "top",
+            options = list(#scrollY="300px", 
+                           scrollX = T,
+                           pageLength = 20,
+                           language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json")))
+}
+
+render_table_bar <- function(data) {
+  datatable(data,
+            class = "nowrap stripe hover cell-border",
+            rownames = FALSE,
+            #filter = "top",
+            options = list(#scrollY="300px", 
+                           # scrollX = T,
+                           pageLength = nrow(data),
+                           language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))) %>% 
+                  formatStyle(names(data)[2:ncol(data)],
+                                background = styleColorBar(range(data[2:ncol(data)], na.rm = T), 'lightblue'),
+                                backgroundSize = '98% 88%',
+                                backgroundRepeat = 'no-repeat',
+                                backgroundPosition = 'center')
+}
+
+number <- function(x) {format(x, big.mark = ",")}
+
+create_excel_file <- function(df,
+                              wb_type = "xlsx",
+                              sheet_title = NULL,
+                              sheet_name = NULL,
+                              sheet_subtitle = NULL) {
+
+    xlsx_add_title <- function(sheet, row_index, title, title_style) {
+        rows <- createRow(sheet, rowIndex = row_index)
+        sheet_title <- createCell(rows, colIndex = 2)
+        setCellValue(sheet_title[[1, 1]], title)
+        setCellStyle(sheet_title[[1, 1]], title_style)
+    }
+
+    set_column_width <- function(.df, .sheet) {
+        cols_width <- sapply(.df, function(x) max(nchar(x), na.rm = TRUE))
+        cols_width <- ifelse(cols_width < 0, 10,
+                      ifelse(cols_width >= 1 & cols_width <= 10, 15,
+                      ifelse(cols_width > 10 & cols_width <= 20, 20,
+                      ifelse(cols_width > 20 & cols_width <= 30, 30, cols_width))))
+        cols_width <- c(5, cols_width)
+        lapply(seq_along(.df), function(x) setColumnWidth(.sheet, colIndex = x, colWidth = cols_width[x]))
+    }
+
+    ## create an empty workbook
+    wb <- createWorkbook(type = wb_type)
+
+    ## define style for workbook
+    title_style <- CellStyle(wb) +
+        Font(wb,
+             color = "blue",
+             heightInPoints = 14,
+             isBold = TRUE,
+             underline = 0)
+
+    subtitle_style <- CellStyle(wb) +
+        Font(wb,
+             heightInPoints = 12,
+             isItalic = FALSE,
+             isBold = FALSE)
+
+    table_rownames_style <- CellStyle(wb) +
+        Font(wb,
+             isBold = FALSE)
+
+    table_colnames_style <- CellStyle(wb) +
+        Font(wb,
+             isBold = TRUE) +
+        Alignment(wrapText = TRUE,
+                  horizontal = "ALIGN_LEFT") +
+        Border(color = "black",
+               position = c("TOP", "BOTTOM"),
+               pen = c("BORDER_THIN", "BORDER_THIN"))
+
+    table_content_style <- CellStyle(wb,
+                                     alignment = Alignment(wrapText = TRUE,
+                                                           horizontal = "ALIGN_CENTER"))
+
+    ## create a new sheet
+    sheet1 <- createSheet(wb, sheetName = sheet_name)
+
+    xlsx_add_title(sheet1,
+                   row_index = 2,
+                   title = sheet_title,
+                   title_style = title_style)
+
+    ## add sheet content
+    addDataFrame(df,
+                 sheet1,
+                 startRow = 4,
+                 startColumn = 1,
+                 colnamesStyle = table_colnames_style,
+                 rownamesStyle = table_rownames_style,
+                 colStyle = table_content_style,
+                 row.names = TRUE)
+
+    ## change column width
+    set_column_width(df, sheet1)
+
+    return(wb)
+}
+
+  
+```
+
+
+```{r loading-package, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("readr", "tidyr", "dplyr", "shiny", "RTA", "leaflet", "lubridate", "xlsx", "highcharter", "flexdashboard")
+sapply(pkgs, require, character.only = TRUE)
+
+switch(
+    sys_user,
+    phuongha = {library("DT")},
+    {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## import data
+
+switch(
+    sys_user,
+    phuongha = {
+        data_dir <- "/home/phuongha/MEGAsync/RTA/Analytic/kingsmen/data/"
+        try(msr_checkin <- read_csv(paste0(data_dir, "MSR_CHECKIN_DEMO/MSR_CHECKIN_DEMO.csv"), col_types = cols(.default = "c")))
+        try(msr_sales <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/MSR_SALES_DEMO.csv"), col_types = cols(.default = "c")))
+        try(msr_sales_re <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/sales_rr.csv"), col_types = cols(.default = "c")))
+        try(msr_remote_sales <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/MSR_SALES_REMOTE_DEMO.csv"), col_types = cols(.default = "c")))
+        try(msr_remote_sales_re <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/sales_rr.csv"), col_types = cols(.default = "c")))
+        # try(msr_weekplan <- read_csv(paste0(data_dir, "MSR_WEEKPLAN_DEMO/MSR_WEEKPLAN_DEMO.csv"), col_types = cols(.default = "c")))
+        # try(msr_weekplan_rr <- read_csv(paste0(data_dir, "MSR_WEEKPLAN_DEMO/msr_rr.csv"), col_types = cols(.default = "c")))
+        try(msr_return <- read_csv(paste0(data_dir, "MSR_RETURN_DEMO/MSR_RETURN_DEMO.csv"), col_types = cols(.default = "c")))
+        try(msr_return_rr <- read_csv(paste0(data_dir, "MSR_RETURN_DEMO/sales_rr.csv"), col_types = cols(.default = "c")))
+        # try(msr_checkout <- read_csv(paste0(data_dir, "MSR_CHECKOUT_DEMO/MSR_CHECKOUT_DEMO.csv"), col_types = cols(.default = "c")))
+
+        #try(msr_product <- read_csv(paste0(data_dir, "msr_product.csv"), col_types = cols(.default = "c")))
+        try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+        try(msr_store <- get_dm_data("C011", "MSR_store"))
+        # try(msr_store_gps <- get_dm_data("C011", "MSR_store_gps"))
+        # try(msr_image <- get_dm_data("C011", "image_map"))
+        try(msr_new_store <- get_dm_data("C011", "MSR_newedit_store"))
+        
+      }, {
+        try(msr_checkin <- get_family_data('C011', "MSR_CHECKIN_DEMO"))
+        try(msr_sales <- get_family_data("C011", "MSR_SALES_DEMO"))
+        try(msr_sales_re <- get_family_data("C011", "MSR_SALES_DEMO", "sales_rr"))
+        try(msr_remote_sales <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO"))
+        try(msr_remote_sales_re <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO", "sales_rr"))
+        # try(msr_weekplan <- get_family_data("C011", "MSR_WEEKPLAN_DEMO"))
+        # try(msr_weekplan_rr <- get_family_data("C011", "MSR_WEEKPLAN_DEMO", "msr_rr"))
+        try(msr_return <- get_family_data("C011", "MSR_RETURN_DEMO"))
+        try(msr_return_rr <- get_family_data("C011", "MSR_RETURN_DEMO", "sales_rr"))
+        # try(msr_checkout <- get_family_data("C011", "MSR_CHECKOUT_DEMO"))
+
+        # try(msr_product <- get_dm_data("C011", "MSR_product"))
+        try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+        try(msr_store <- get_dm_data("C011", "MSR_store"))
+        # try(msr_store_gps <- get_dm_data("C011", "MSR_store_gps"))
+        # try(msr_image <- get_dm_data("C011", "image_map"))
+        try(msr_new_store <- get_dm_data("C011", "MSR_newedit_store"))
+
+    }
+)
+
+```
+
+
+```{r transform-data, include=FALSE}
+
+# ## filter active staff
+# msr_staff <- filter(msr_staff, staff_status == "")
+
+## combine repeats
+msr_sales_re <- left_join(msr_sales_re, msr_sales, by = "instanceID")
+msr_remote_sales_re <- left_join(msr_remote_sales_re, msr_remote_sales, by = "instanceID")
+msr_return <- left_join(msr_return_rr, msr_return, by = "instanceID")
+
+
+## replace with na
+msr_sales_re <- replace_with_na(msr_sales_re)
+msr_remote_sales_re <- replace_with_na(msr_remote_sales_re)
+msr_return <- replace_with_na(msr_return)
+msr_checkin <- replace_with_na(msr_checkin)
+
+
+## remove testing instances
+msr_remote_sales_re <- filter(msr_remote_sales_re, grepl("^dgw", username))
+msr_sales_re <- filter(msr_sales_re, grepl("^dgw", username))
+msr_return <- filter(msr_return, grepl("^dgw", username))
+msr_checkin <- filter(msr_checkin, grepl("^dgw", username))
+
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+# msr_staff <- filter(msr_staff, username != "dgw_vthieu")
+msr_new_store <- filter(msr_new_store, grepl("^dgw", username))
+msr_new_store <- rename(msr_new_store, salerep_id = staff_id)
+msr_store <- bind_rows(msr_store, msr_new_store)
+msr_store <- filter(msr_store, !duplicated(store_id, fromLast = T))
+#product_dict <- make_dict(msr_product$product_id, msr_product$product_lb)
+
+```
+
+
+
+```{r calculating, include=FALSE}
+
+## select column
+msr_sales_re <- select(msr_sales_re,
+                       work_date, starttime, staff_id, store_id, product_total_money, new_store, total_money_payment, sales_code)
+msr_remote_sales_re <- select(msr_remote_sales_re,
+                              work_date, starttime, staff_id, store_id, product_total_money, new_store, total_money_payment, sales_code)
+msr_checkin <- select(msr_checkin,
+                      staff_id, store_id, starttime, submission_date, work_date)
+msr_return <- select(msr_return, 
+                     work_date, starttime, staff_id, store_id, money_total)
+
+## -----------------------------------------------------------------------------
+## combine sales and sales remote
+
+msr_sales_re <- bind_rows(msr_sales_re, msr_remote_sales_re)
+
+msr_sales_re <- gen_ymwd(msr_sales_re, by = "starttime", which = "ymd", into = c("year", "month", "date"))
+msr_sales_re$product_total_money <- as.double(msr_sales_re$product_total_money)
+msr_sales_re$total_money_payment <- as.double(msr_sales_re$total_money_payment)
+
+
+## ------------------------------------------------------------------------
+## total money, total code, total store purchase
+
+msr_total_money <- msr_sales_re %>% 
+  group_by(staff_id, year, month) %>% 
+  summarise(total_money = sum(product_total_money, na.rm = T),
+            code = n_distinct(sales_code),
+            store_purchase = n_distinct(store_id)) %>% 
+  ungroup()
+
+## total payment
+msr_total_payment <- msr_sales_re %>%
+    filter(!duplicated(sales_code)) %>% 
+    group_by(year, month, staff_id) %>%
+    summarise(total_payment = sum(total_money_payment, na.rm = TRUE)) %>%
+    ungroup()
+
+
+## total store per salerep
+## depend on DM msr_store
+msr_sales_store <- msr_store %>% 
+  filter(!duplicated(store_id)) %>% 
+  count(salerep_id) %>% 
+  rename(staff_id = salerep_id)
+
+## -------------------------------------------------------------------
+## work date
+
+msr_checkin <- gen_ymwd(msr_checkin, by = "starttime", which = "ymd", into = c("year", "month", "date"))
+msr_work <- msr_checkin %>% 
+  group_by(year, month, staff_id) %>% 
+  summarise(n_work = n_distinct(work_date))
+
+## -----------------------------------------------------------------------------
+## plan
+store_plan <- msr_store %>% 
+  filter(!is.na(visitday_id), !is.na(salerep_id), salerep_id != "") %>% 
+  select(store_id, visitday_id, salerep_id) %>% 
+  mutate(visitday_id = strsplit(visitday_id, " ")) %>% 
+  unnest(visitday_id) %>% 
+  mutate(plan = 1)
+plan_day <- count(store_plan, visitday_id, salerep_id)
+plan_week <- count(store_plan, salerep_id)
+plan_month <- mutate(plan_week)
+
+msr_checkin$day <- format(msr_checkin$date, "%a")
+
+store_plan <- left_join(msr_checkin,
+                        store_plan,
+                        by = c("day" = "visitday_id", 
+                               "staff_id" = "salerep_id",
+                               "store_id"))
+store_plan <- store_plan %>% 
+    group_by(year, month, staff_id) %>% 
+    summarise(visit_plan = sum(plan, na.rm = T),
+              visit_out = sum(is.na(plan))) %>% 
+    ungroup()
+
+## ----------------------------------------------------
+## New store
+new_store <- msr_sales_re %>% 
+    group_by(year, month, staff_id) %>% 
+    summarise(new_store = sum(new_store == 1, na.rm = T),
+              new_km = sum(new_store == 2, na.rm = T),
+              new_lion = sum(new_store == 3, na.rm = T)) %>% 
+    ungroup()
+
+## -----------------------------------------------------------------------------
+## return 
+
+msr_return$money_total <- as.double(msr_return$money_total)
+msr_return <- gen_ymwd(msr_return, by = "starttime", which = "ymd", into = c("year", "month", "date"))
+msr_return <- msr_return %>% 
+  group_by(year, month, staff_id) %>% 
+  summarise(total_return = sum(money_total, na.rm = TRUE)) %>% 
+  ungroup()
+
+
+## -----------------------------------------------------------------------------
+## merge data
+
+final <- full_join(msr_total_money, msr_total_payment, by = c("staff_id", "year", "month"))
+final <- full_join(final, msr_return, by = c("staff_id", "year", "month"))
+final <- full_join(final, msr_work, by = c("staff_id", "year", "month"))
+final <- full_join(final, store_plan, by = c("staff_id", "year", "month"))
+final <- full_join(final, new_store, by = c("staff_id", "year", "month"))
+
+final <- mutate(final,
+                revenue = deduct(total_money, total_return),
+                payment = deduct(total_payment, total_return),
+                discount = deduct(revenue, payment))
+final <- final %>%
+  group_by(month, year) %>% 
+  mutate(percent_revenue = round(revenue * 100 / sum(revenue, na.rm = T), 2),
+         percent_payment = round(payment * 100 / sum(payment, na.rm = T), 2),
+         percent_code = round(code * 100 / sum(code, na.rm = T), 2),
+         percent_store_purchase = round(store_purchase * 100 / sum(store_purchase, na.rm = T), 2),
+         revenue_average = round(revenue / n_work, 2),
+         code_average = round(code / n_work, 2),
+         store_purchase_average = round(store_purchase / n_work, 2)) %>% 
+  ungroup()
+
+
+
+## -----------------------------------------------------------------------------
+## merge label
+
+final <- left_join(final, 
+                   select(msr_staff, supsd_id, suprsm_id, supasm_id, staff_region, staff_id), 
+                   by = "staff_id")
+msr_sales_store <- left_join(msr_sales_store, 
+                             select(msr_staff, supsd_id, suprsm_id, supasm_id, staff_id), 
+                             by = "staff_id")
+## create date follow month, year
+final <- mutate(final,
+                month = ifelse(nchar(month) == 1, paste0("0", month), month),
+                date = paste0(year, "-", month, "-01"),
+                month = paste0(year, "-", month))
+#final$date <- as.Date(final$date)
+
+
+## -----------------------------------------------------------------------------
+## filtering data by user role
+
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "phuongha") {
+    user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+  	#user_name <- "dgw_duhtrang"
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        final <- filter(final, staff_id == user_id)
+        msr_staff <- filter(msr_staff, staff_id == user_id)
+        msr_sales_store <- filter(msr_sales_store, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        final <- filter(final, supasm_id == user_id)
+        msr_staff <- filter(msr_staff, supasm_id == user_id)
+        msr_sales_store <- filter(msr_sales_store, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        final <- filter(final, suprsm_id == user_id)
+        msr_staff <- filter(msr_staff, suprsm_id == user_id)
+        msr_sales_store <- filter(msr_sales_store, suprsm_id == user_id)
+    }
+
+    #if (user_role == "SD") {
+    #    final <- filter(final, supsd_id == user_id)
+    #    msr_staff <- filter(msr_staff, supsd_id == user_id)
+    #    msr_sales_store <- filter(msr_sales_store, supsd_id == user_id)
+    #}
+}
+
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2017:current_year()
+input_months <- c(1:12)
+
+if (exists("final")) {
+  input_dates <- c(unique(final$date), Sys.Date())
+} else {
+  input_dates <- Sys.Date()
+}
+
+input_dates <- paste0(substr(input_dates, 1, 8), "01")
+input_dates <- lubridate::ymd(input_dates)
+input_dates <- unique(input_dates)
+
+if (exists("final")) {
+    input_months <- c(unique(final$month), substr(Sys.Date(), 1, 7))
+} else {
+    input_months <- substr(Sys.Date(), 1, 7)
+}
+
+input_months <- sort(input_months, decreasing = TRUE)
+
+##test
+#input_dates <- c("2018-01-01", "2018-02-01", "2021-12-01", "2017-12-01")
+#input_dates <- lubridate::ymd(input_dates)
+
+input_levels <- c("RSM", "ASM", "SR")
+
+#input_SD <- distinct(select(msr_staff, supsd_id, supsd_lb))
+#input_SD <- filter(input_SD, supsd_id != "", !is.na(supsd_id))
+#input_SD <- c("Tất cả" = "All", make_dict(input_SD$supsd_lb, input_SD$supsd_id))
+
+input_RSM <- distinct(select(msr_staff, suprsm_id, suprsm_lb))
+input_RSM <- filter(input_RSM, suprsm_id != "", !is.na(suprsm_id))
+input_RSM <- c("Tất cả" = "All", make_dict(input_RSM$suprsm_lb, input_RSM$suprsm_id))
+
+input_ASM <- distinct(select(msr_staff, supasm_id, supasm_lb))
+input_ASM <- filter(input_ASM, supasm_id != "", !is.na(supasm_id))
+input_ASM <- c("Tất cả" = "All", make_dict(input_ASM$supasm_lb, input_ASM$supasm_id))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+
+#input_criter <- make_dict(c("Doanh thu trước thuế", "Tổng đơn hàng", "Tổng nhà thuốc bao phủ", "Ngày làm việc"),
+#                          c("revenue", "code", "store", "work_day"))
+
+```
+
+
+```{r server-processing, include=FALSE}
+
+## ----------------------------------------------------------------------------------------
+## FILTER
+
+col <- c("region_lb", "staff_region", "supsd_lb", "suprsm_lb", "supasm_lb", "npp_lb", "staff_id", "staff_lb",
+         "n", "store_purchase", "new_store", "new_km", "new_lion",
+         "visit_plan", "visit_out",
+         "code", "revenue", "payment", "discount", "n_work")
+
+name_dict <- make_dict(col,
+                       c("Khu vực", "Địa bàn", "SD", "RSM", "ASM", "NPP", "Mã Salesrep", "Tên Salesrep",
+                         "Tổng số NT", "Số NT bao phủ", "Tổng KH mở mới", "Tổng Mở mới nhóm hàng Kingsmen", "Tổng Mở mới nhóm hàng Lion",
+                         "Tổng NT viếng thăm theo kế hoạch", "Tổng NT viếng thăm ngoài kế hoạch",
+                         "Tổng số đơn hàng", "Tổng doanh số trước chiết khấu", 
+                         "Tổng doanh số sau chiết khấu", "Tổng tiền chiết khấu", "Tổng ngày làm việc"))
+
+
+re_filter <- reactive({
+  out <- final
+  #if (input$level_ip == "SD") {
+	#  if (!any(input$SD_input %in% "All")) {  
+  #      out <- filter(out, supsd_id %in% input$SD_input)
+  #      msr_sales_store <- filter(msr_sales_store, supsd_id %in% input$SD_input)
+        #msr_staff <- filter(msr_staff, supsd_id %in% input$SD_input)
+  #      validate(need(nrow(out) > 0, "Không có dữ liệu của SD này, vui lòng chọn SD khác"))
+        #msr_store <- filter(msr_store, salerep_id %in% input$SD_input)
+	#	}
+  #}
+
+  if (input$level_ip == "RSM") {
+  	if (!any(input$RSM_input %in% "All")) {  
+  	    out <- filter(out, suprsm_id %in% input$RSM_input)
+  	    msr_sales_store <- filter(msr_sales_store, suprsm_id %in% input$RSM_input)
+  	    #msr_staff <- filter(msr_staff, suprsm_id %in% input$RSM_input)
+  	    validate(need(nrow(out) > 0, "Không có dữ liệu của RSM này, vui lòng chọn RSM khác"))
+  	    #msr_store <- filter(msr_store, suprsm_id %in% input$RSM_input)
+  	}
+  }
+  
+  if (input$level_ip == "ASM") {
+  	if (!any(input$ASM_input %in% "All")) {  
+  	    out <- filter(out, supasm_id %in% input$ASM_input)
+  	    msr_sales_store <- filter(msr_sales_store, supasm_id %in% input$ASM_input)
+  	    #msr_staff <- filter(msr_staff, supasm_id %in% input$ASM_input)
+  	    validate(need(nrow(out) > 0, "Không có dữ liệu của ASM này, vui lòng chọn ASM khác"))
+  	    #msr_store <- filter(msr_store, suprsm_id %in% input$RSM_input)
+  	}
+  }
+
+
+  if (input$level_ip == "SR") {
+  	if (!any(input$SR_input %in% "All")) {  
+  	    out <- filter(out, staff_id %in% input$SR_input)
+  	    msr_sales_store <- filter(msr_sales_store, staff_id %in% input$SR_input)
+  	    #msr_staff <- filter(msr_staff, staff_id %in% input$SR_input)
+  	    validate(need(nrow(out) > 0, "Không có dữ liệu của SR này, vui lòng chọn SR khác"))
+  	    #msr_store <- filter(msr_store, staff_id %in% input$SR_input)
+  	}
+  }
+  
+  out <- filter(out,
+                date >= paste0(input$month_start_ip, "-01"),
+                date <= paste0(input$month_end_ip, "-01"))
+  validate(need(nrow(out) > 0, "Không có dữ liệu trong thời gian này, vui lòng chọn thời gian khác"))
+  chart <- out %>%
+      select(-supsd_id, -suprsm_id, -supasm_id) %>%
+      left_join(msr_staff, by = "staff_id") 
+  msr_sales_store <- left_join(select(msr_sales_store, staff_id, n),
+                               select(msr_staff, staff_id, staff_lb, supsd_lb, suprsm_lb, supasm_lb),
+                               by = "staff_id")
+  result <- list(chart = chart, out = out, msr_sales_store = msr_sales_store)
+  result
+  
+})
+
+## filter and sumsarise per role
+
+re_chart_rsm <- reactive({
+  out <- re_filter()$chart
+  out <- out %>% 
+    group_by(suprsm_lb, month) %>% 
+    summarise(total_money = sum(total_money, na.rm = T),
+              code = sum(code, na.rm = T),
+              store_purchase = sum(store_purchase, na.rm = T),
+              revenue = sum(revenue, na.rm = T),
+              revenue_average = sum(revenue_average, na.rm = T),
+              payment = sum(payment, na.rm = T),
+              discount = sum(discount, na.rm = T),
+              n_work = round(mean(n_work, na.rm = T), 2),
+              percent_revenue = sum(percent_revenue, na.rm = T),
+              percent_payment = sum(percent_payment, na.rm = T),
+              percent_code = sum(percent_code, na.rm = T),
+              percent_store_purchase = sum(percent_store_purchase, na.rm = T))
+  out <- filter(out, suprsm_lb != "")
+  out
+  
+})
+
+re_chart_asm <- reactive({
+  out <- re_filter()$chart
+  out <- out %>% 
+    group_by(supasm_lb, month) %>% 
+    summarise(total_money = sum(total_money, na.rm = T),
+              code = sum(code, na.rm = T),
+              store_purchase = sum(store_purchase, na.rm = T),
+              revenue = sum(revenue, na.rm = T),
+              revenue_average = sum(revenue_average, na.rm = T),
+              payment = sum(payment, na.rm = T),
+              discount = sum(discount, na.rm = T),
+              n_work = round(mean(n_work, na.rm = T), 2),
+              percent_revenue = sum(percent_revenue, na.rm = T),
+              percent_payment = sum(percent_payment, na.rm = T),
+              percent_code = sum(percent_code, na.rm = T),
+              percent_store_purchase = sum(percent_store_purchase, na.rm = T))
+  out <- filter(out, supasm_lb != "")
+  out
+  
+})
+
+
+## -----------------------------------------------------------------------------------
+## TAB GENERAL TABLE
+re_kpi_tbl <- reactive({
+  out <- re_filter()$out
+  out <- out %>% 
+    group_by(staff_id) %>% 
+    summarise(total_money = sum(total_money, na.rm = T),
+              code = sum(code, na.rm = T),
+              store_purchase = sum(store_purchase, na.rm = T),
+              revenue = sum(revenue, na.rm = T),
+              payment = sum(payment, na.rm = T),
+              discount = sum(discount, na.rm = T),
+              n_work = sum(n_work, na.rm = T),
+              new_store = sum(new_store, na.rm = T),
+              new_lion = sum(new_lion, na.rm = T),
+              new_km = sum(new_km, na.rm = T),
+              visit_plan = sum(visit_plan, na.rm =T),
+              visit_out = sum(visit_out, na.rm = T)) %>% 
+    ungroup()
+  out <- left_join(select(re_filter()$msr_sales_store, staff_id, n), out, by = "staff_id")
+  out <- left_join(out,
+                   msr_staff,
+                   by = "staff_id")
+  
+  out[out == 0] <- NA
+  out <- arrange(out, desc(code))
+  
+  out <- bind_rows(out,
+                   data.frame(staff_lb = "Tổng",
+                              n = sum(out$n, na.rm = T),
+                              total_money = sum(out$total_money, na.rm = T),
+                              code = sum(out$code, na.rm = T),
+                              store_purchase = sum(out$store_purchase, na.rm = T),
+                              revenue = sum(out$revenue, na.rm = T),
+                              payment = sum(out$payment, na.rm = T),
+                              discount = sum(out$discount, na.rm = T),
+                              new_store = sum(out$new_store, na.rm = T),
+                              new_lion = sum(out$new_lion, na.rm = T),
+                              new_km = sum(out$new_km, na.rm = T),
+                              visit_plan = sum(out$visit_plan, na.rm =T),
+                              visit_out = sum(out$visit_out, na.rm = T)))
+  out <- select(out, one_of(col))
+  names(out) <- encode(names(out), name_dict)
+  out
+  
+})
+
+output$report_tbl <- renderDataTable(datatable(re_kpi_tbl(),
+            class = "nowrap stripe hover cell-border",
+            rownames = FALSE,
+            #filter = "top",
+            options = list(scrollX = T, scrollY = "900px",
+                           pageLength = 20,
+                           language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))) %>%
+                                         formatCurrency(c("Tổng số NT", "Số NT bao phủ", "Tổng số đơn hàng",
+                                                          "Tổng doanh số trước chiết khấu", "Tổng doanh số sau chiết khấu", 
+                                                          "Tổng tiền chiết khấu", "Tổng ngày làm việc"), currency = ""))
+
+
+## ------------------------------------------------------------------------------
+## TAB DETAIL CHART
+hchart_filter <- function(vals) {
+  
+     #vals <- return(vals)
+  	 h <- hchart(out, "column", hcaes(x = month, y = !!vals, group = staff_id))
+  	 return(h)
+
+}
+
+output$re_revenue_plot <- renderHighchart({
+
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+	    out <- hchart(re_chart_rsm(), "column", hcaes(x = month, y = revenue, group = suprsm_lb))
+	    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+  	 out <- hchart(re_chart_asm(), "column", hcaes(x = month, y = revenue, group = supasm_lb))
+  	 return(out)
+  }
+
+
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+  	 hchart(re_filter()$chart, "column", hcaes(x = month, y = revenue, group = staff_lb))
+  }
+  
+})
+
+output$re_revenue_rank <- renderHighchart({
+
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+	    out <- hchart(re_chart_rsm(), "spline", hcaes(x = month, y = percent_revenue, group = suprsm_lb))
+	    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+  	 out <- hchart(re_chart_asm(), "spline", hcaes(x = month, y = percent_revenue, group = supasm_lb))
+  	 return(out)
+  }
+
+
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+  	 hchart(re_filter()$chart, "spline", hcaes(x = month, y = percent_revenue, group = staff_lb))
+  }
+  
+})
+
+output$re_store_purchase_plot <- renderHighchart({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+    out <- hchart(re_chart_rsm(), "column", hcaes(x = month, y = store_purchase, group = suprsm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+    out <- hchart(re_chart_asm(), "column", hcaes(x = month, y = store_purchase, group = supasm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+    hchart(re_filter()$chart, "column", hcaes(x = month, y = store_purchase, group = staff_lb))
+  }
+  
+})
+
+output$re_store_purchase_rank <- renderHighchart({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+    out <- hchart(re_chart_rsm(), "spline", hcaes(x = month, y = percent_store_purchase, group = suprsm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+    out <- hchart(re_chart_asm(), "spline", hcaes(x = month, y = percent_store_purchase, group = supasm_lb))
+    return(out)
+  }
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+    hchart(re_filter()$chart, "spline", hcaes(x = month, y = percent_store_purchase, group = staff_lb))
+  }
+  
+})
+
+output$re_code_plot <- renderHighchart({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+    out <- hchart(re_chart_rsm(), "column", hcaes(x = month, y = code, group = suprsm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+    out <- hchart(re_chart_asm(), "column", hcaes(x = month, y = code, group = supasm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+    hchart(re_filter()$chart, "column", hcaes(x = month, y = code, group = staff_lb))
+  }
+  
+})
+
+output$re_code_rank <- renderHighchart({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+    out <- hchart(re_chart_rsm(), "spline", hcaes(x = month, y = percent_code, group = suprsm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+    out <- hchart(re_chart_asm(), "spline", hcaes(x = month, y = percent_code, group = supasm_lb))
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+    hchart(re_filter()$chart, "spline", hcaes(x = month, y = percent_code, group = staff_lb))
+  }
+  
+})
+
+
+output$re_work <- renderDataTable({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+    out <- re_chart_rsm() %>% select(suprsm_lb, month, n_work) %>% rename("Nhân viên" = suprsm_lb) %>% spread(month, n_work)
+    return(out)
+  }
+  
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+    out <- re_chart_asm() %>% select(supasm_lb, month, n_work) %>% rename("Nhân viên" = supasm_lb)%>% spread(month, n_work)
+    return(out)
+  }
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+    
+    out <- re_filter()$chart %>% select(staff_lb, month, n_work) %>% rename("Nhân viên" = staff_lb)%>% spread(month, n_work)
+    return(out)
+    
+  }
+  
+},
+rownames = F)
+
+
+## value box
+
+re_revenue_average <- reactive({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+  	
+  	 out <- round(sum(re_filter()$chart$revenue, na.rm = T) / sum(re_filter()$chart$n_work, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+  	
+  	 out <- round(sum(re_filter()$chart$revenue, na.rm = T) / sum(re_filter()$chart$n_work, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+  	
+  	 out <- re_filter()$chart$revenue_average
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+})
+
+re_code_average <- reactive({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+  	
+  	 out <- round(sum(re_filter()$chart$code, na.rm = T) / sum(re_filter()$chart$n_work, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+  	
+  	 out <- round(sum(re_filter()$chart$code, na.rm = T) / sum(re_filter()$chart$n_work, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+  	
+  	 out <- round(mean(re_filter()$chart$code_average, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+})
+
+re_store_purchase_average <- reactive({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+  	
+  	 out <- round(sum(re_filter()$chart$store_purchase, na.rm = T) / sum(re_filter()$chart$n_work, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+  	
+  	 out <- round(sum(re_filter()$chart$store_purchase, na.rm = T) / sum(re_filter()$chart$n_work, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+  	
+  	 out <- round(mean(re_filter()$chart$store_purchase_average, na.rm = T), 2)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+})
+
+re_total_store <- reactive({
+  
+  if (input$level_ip == "RSM" & !any(input$RSM_input %in% "All")) {
+  	
+  	 out <- sum(re_filter()$msr_sales_store$n)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+  	
+  	 out <- sum(re_filter()$msr_sales_store$n)
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+  
+  if (input$level_ip == "SR" & !any(input$SR_input %in% "All")) {
+  	
+  	 out <- re_filter()$msr_sales_store$n
+  	 out <- number(out)
+  	 return(out)
+  	
+  }
+})
+
+## -----------------------------------------------------------------------------------
+## TAB OVERVIEW
+
+
+re_revenue_overview <- reactive({
+  if (input$level_ip == "RSM" & any(input$RSM_input %in% "All")) {
+  	
+  	 out <- re_chart_rsm() %>% 
+  	   select(suprsm_lb, month, revenue) %>% 
+  	   rename(staff_lb = suprsm_lb)
+  	
+  } else if (input$level_ip == "RSM" & !input$RSM_input %in% "All") {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, revenue)
+  }
+  
+  if (input$level_ip == "ASM" & any(input$ASM_input %in% "All")) {
+  	
+  	 out <- re_chart_asm() %>% 
+  	   select(supasm_lb, month, revenue) %>% 
+  	   rename(staff_lb = supasm_lb)
+  	
+  } else if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, revenue)
+  }
+  
+  if (input$level_ip == "SR") {
+  	
+  	 out <- re_filter()$chart %>% 
+  	   select(staff_lb, month, revenue)
+  	
+  } 
+  
+  out <- spread(out, month, revenue)
+  validate(need(nrow(out) > 0, ""))
+  names(out)[1] <- "Nhân viên"
+  out
+})
+
+re_revenue_average_overview <- reactive({
+  
+  if (input$level_ip == "RSM" & any(input$RSM_input %in% "All")) {
+  	
+  	 out <- re_chart_rsm() %>% 
+  	   select(suprsm_lb, month, revenue_average) %>% 
+  	   rename(staff_lb = suprsm_lb)
+  	
+  } else if (input$level_ip == "RSM" & !input$RSM_input %in% "All") {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, revenue_average)
+  }
+  
+  if (input$level_ip == "ASM" & any(input$ASM_input %in% "All")) {
+  	
+  	 out <- re_chart_asm() %>% 
+  	   select(supasm_lb, month, revenue_average) %>% 
+  	   rename(staff_lb = supasm_lb)
+  	
+  } else if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, revenue_average)
+  }
+  
+  if (input$level_ip == "SR") {
+  	
+  	 out <- re_filter()$chart %>% 
+  	   select(staff_lb, month, revenue_average)
+  	
+  } 
+  
+  out <- spread(out, month, revenue_average)
+  validate(need(nrow(out) > 0, ""))
+  names(out)[1] <- "Nhân viên"
+  out
+})
+
+re_code_overview <- reactive({
+  if (input$level_ip == "RSM" & any(input$RSM_input %in% "All")) {
+  	
+  	 out <- re_chart_rsm() %>% 
+  	   select(suprsm_lb, month, code) %>% 
+  	   rename(staff_lb = suprsm_lb)
+  	
+  } else if (input$level_ip == "RSM" & !input$RSM_input %in% "All") {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, code)
+  }
+  
+  if (input$level_ip == "ASM" & any(input$ASM_input %in% "All")) {
+  	
+  	 out <- re_chart_asm() %>% 
+  	   select(supasm_lb, month, code) %>% 
+  	   rename(staff_lb = supasm_lb)
+  	
+  } else if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, code)
+  }
+  
+  if (input$level_ip == "SR") {
+  	
+  	 out <- re_filter()$chart %>% 
+  	   select(staff_lb, month, code)
+  	
+  } 
+  
+  out <- spread(out, month, code)
+  validate(need(nrow(out) > 0, ""))
+  names(out)[1] <- "Nhân viên"
+  out
+})
+
+re_store_purchase_overview <- reactive({
+  if (input$level_ip == "RSM" & any(input$RSM_input %in% "All")) {
+  	
+  	 out <- re_chart_rsm() %>% 
+  	   select(suprsm_lb, month, store_purchase) %>% 
+  	   rename(staff_lb = suprsm_lb)
+  	
+  } else if (input$level_ip == "RSM" & !input$RSM_input %in% "All") {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, store_purchase)
+  }
+  
+  if (input$level_ip == "ASM" & any(input$ASM_input %in% "All")) {
+  	
+  	 out <- re_chart_asm() %>% 
+  	   select(supasm_lb, month, store_purchase) %>% 
+  	   rename(staff_lb = supasm_lb)
+  	
+  } else if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, store_purchase)
+  }
+  
+  if (input$level_ip == "SR") {
+  	
+  	 out <- re_filter()$chart %>% 
+  	   select(staff_lb, month, store_purchase)
+  	
+  } 
+  
+  out <- spread(out, month, store_purchase)
+  validate(need(nrow(out) > 0, ""))
+  names(out)[1] <- "Nhân viên"
+  out
+})
+
+re_work_overview <- reactive({
+  
+  if (input$level_ip == "RSM" & any(input$RSM_input %in% "All")) {
+  	
+  	 out <- re_chart_rsm() %>% 
+  	   select(suprsm_lb, month, n_work) %>% 
+  	   rename(staff_lb = suprsm_lb)
+  	
+  } else if (input$level_ip == "RSM" & !input$RSM_input %in% "All") {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, n_work)
+  }
+  
+  if (input$level_ip == "ASM" & any(input$ASM_input %in% "All")) {
+  	
+  	 out <- re_chart_asm() %>% 
+  	   select(supasm_lb, month, n_work) %>% 
+  	   rename(staff_lb = supasm_lb)
+  	
+  } else if (input$level_ip == "ASM" & !any(input$ASM_input %in% "All")) {
+      out <- re_filter()$chart %>% 
+    	   select(staff_lb, month, n_work)
+  }
+  
+  if (input$level_ip == "SR") {
+  	
+  	 out <- re_filter()$chart %>% 
+  	   select(staff_lb, month, n_work)
+  	 out
+  }
+  
+  out <- mutate(out,
+                n_work = ifelse(n_work < 10, 
+                                paste0("<b><span style='color:red;'>",
+                                       n_work, 
+                                       "</span></b>"),
+                                n_work))
+  out <- spread(out, month, n_work)
+  validate(need(nrow(out) > 0, ""))
+  names(out)[1] <- "Nhân viên"
+  out
+})
+
+## output
+output$re_revenue_overview <- renderDataTable(render_table_bar(re_revenue_overview()))
+output$re_revenue_average_overview <- renderDataTable(render_table_bar(re_revenue_average_overview()))
+output$re_code_overview <- renderDataTable(render_table_bar(re_code_overview()))
+output$re_store_purchase_overview <- renderDataTable(render_table_bar(re_store_purchase_overview()))
+output$re_work_overview <- renderDataTable(re_work_overview(),
+                                           class = "nowrap stripe hover cell-border",
+                                           rownames = FALSE,
+                                           #filter = "top",
+                                           options = list(scrollY="300px", 
+                                             #scrollX = T,
+                                             pageLength = nrow(re_work_overview()),
+                                             language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json")),
+                                           escape = F)
+
+```
+
+  
+  
+
+```{r excel, include=FALSE}
+
+output$report_xls <- downloadHandler(
+  filename = paste0("238_[Kingsmen]BaoCaoKPISalesRep", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx"),
+
+  content = function(file) {
+        ## make workbook
+        wb <- create_excel_file({
+            out <- re_kpi_tbl()
+            cols <- c("Tổng số NT", "Số NT bao phủ", "Tổng số đơn hàng", "Tổng doanh số trước chiết khấu", 
+                      "Tổng doanh số sau chiết khấu", "Tổng tiền chiết khấu", "Tổng ngày làm việc")
+            out[, cols] <- sapply(out[, cols], number)
+            #out[] <- lapply(out[], as.character)
+            out[] <- lapply(out[], function(x) gsub("NA", "", x))
+            out
+        },
+        sheet_name = "Báo cáo KPI SalesRep",
+        sheet_title = c("[Kingsmen] Báo cáo KPI SalesRep"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+```
+
+Inputs {.sidebar}
+=========================================================================
+
+
+```{r input}
+
+tags$br()
+# sliderInput("month_year_ip", 
+#             "Chọn thời gian", 
+#             min = min(input_dates),
+#             max = max(input_dates),
+#             value = input_dates,
+#             timeFormat="%b %Y",
+#             step = 31)
+
+selectInput(inputId = "month_start_ip",
+            label = "Từ tháng",
+            choices = input_months,
+		    selected = input_months[1])
+
+selectInput(inputId = "month_end_ip",
+            label = "đến tháng",
+            choices = input_months,
+		    selected = input_months[1])
+
+  
+fluidRow(
+  column(
+    width = 12,
+    radioButtons(
+               inputId ="level_ip",
+               label = tags$strong("Chọn cấp bậc:"),
+               choices = input_levels, 
+               selected = "SR")
+  )
+)
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.level_ip =='SR'",
+      selectInput(
+                inputId ="SR_input",
+                label ="Chọn SalesRep: ",
+                choice = input_SR,
+                #multiple = T,
+                selected = "All")
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='ASM'",
+      selectInput(
+                inputId ="ASM_input",
+                label ="Chọn ASM: ",
+                choice = input_ASM,
+                #multiple = T,
+                selected = "All")
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='RSM'",
+      selectInput(
+                inputId ="RSM_input",
+                label ="Chọn RSM: ",
+                choice = input_RSM,
+                #multiple = T,
+                selected = "All")
+      )
+      
+    )
+  )
+
+
+
+
+tags$br()
+
+fluidRow(
+    column(
+        width = 2,
+        downloadButton(outputId = 'report_xls', label = 'xlsx')
+    )
+)
+
+tags$br()
+# renderDataTable(re_filter())
+tags$br()
+
+```
+
+
+**Bảng tổng hợp**
+=========================================================================
+
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "report_tbl")
+    )
+)
+
+
+
+```
+
+
+**Chi tiết theo từng Nhân viên**
+=========================================================================
+
+
+Row 
+--------------------------------------------------------------
+
+### Doanh thu bình quân trên ngày trên Salerep
+
+```{r}
+
+renderValueBox(valueBox(re_revenue_average()))
+
+```
+
+
+### Đơn hàng bình quân trên ngày trên Salerep
+
+```{r}
+
+renderValueBox(valueBox(re_code_average()))
+
+```
+
+### Nhà thuốc bao phủ bình quân trên tháng trên Salerep
+
+```{r}
+
+renderValueBox(valueBox(re_store_purchase_average()))
+
+```
+
+### Tổng nhà thuốc thuộc quyền quản lý
+
+```{r}
+
+renderValueBox(valueBox(re_total_store()))
+
+```
+
+Row 
+---------------------------------------------------------------
+
+### Doanh thu theo tháng
+
+```{r}
+
+highchartOutput("re_revenue_plot")
+
+```
+
+### Tỉ lệ phần trăm doanh thu so với tổng Salerep
+
+```{r}
+
+highchartOutput("re_revenue_rank")
+
+```
+
+Row 
+---------------------------------------------------------------
+
+### Tổng đơn hàng theo tháng
+
+```{r}
+
+highchartOutput("re_code_plot")
+
+```
+
+### Tỉ lệ phần trăm đơn hàng so với tổng Salerep
+
+```{r}
+
+highchartOutput("re_code_rank")
+
+```
+
+Row 
+---------------------------------------------------------------
+
+### Tổng nhà thuốc bao phủ theo tháng
+
+```{r}
+
+highchartOutput("re_store_purchase_plot")
+
+```
+
+### Tỉ lệ phần trăm nhà thuốc bao phủ so với tổng Salerep
+
+```{r}
+
+highchartOutput("re_store_purchase_rank")
+
+```
+
+
+Row
+---------------------------------------------------------------
+
+### Tổng ngày làm việc trung bình theo Salerep
+
+```{r}
+
+dataTableOutput("re_work")
+
+```
+
+**Tổng quan theo tháng**
+=========================================================================
+
+Row {.tabset .tabset-fade} 
+-------------------------------------
+  
+### Doanh thu
+  
+```{r}
+
+DT::dataTableOutput("re_revenue_overview")
+
+```
+
+
+### Doanh thu bình quân
+
+```{r}
+
+DT::dataTableOutput("re_revenue_average_overview")
+
+```
+
+
+### Tổng số nhà thuốc bao phủ
+
+```{r}
+
+DT::dataTableOutput("re_store_purchase_overview")
+
+```
+
+### Tổng đơn hàng
+
+```{r}
+
+DT::dataTableOutput("re_code_overview")
+
+```
+
+### Ngày làm việc
+
+```{r}
+
+DT::dataTableOutput("re_work_overview")
+
+```

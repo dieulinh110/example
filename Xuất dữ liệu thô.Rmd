@@ -1,0 +1,228 @@
+---
+title: "Xuất dữ liệu thô"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d/%m/%Y %H:%M:%S')`"
+output:
+    html_document:
+        theme: flatly
+runtime: shiny
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE)
+sys_user <- Sys.info()["user"]
+
+
+```
+
+```{r packages, include=FALSE}
+
+pkgs <- c("dplyr", "readr", "RTA", "lubridate")
+sapply(pkgs, require, character.only = TRUE)
+
+
+```
+
+```{r function, include = FALSE}
+db_download <- function(site, family_id, table = family_id) {
+  # helper function
+  is_url <- function(x) grepl("^(http|ftp)s?://", x)
+  if (!is_url(site)) {
+    site <- RTA::get_project_url(site)
+  }
+  
+  url <- paste0(site, "/tmp/family/", family_id, "/official/", family_id, ".db")
+  filename <- paste0(table, ".db")
+  
+  downloader::download(url, filename)
+  
+  db_conn <- DBI::dbConnect(RSQLite::SQLite(), filename)
+  on.exit(DBI::dbDisconnect(db_conn))
+  out <- DBI::dbReadTable(db_conn, table)
+  out
+}
+```
+
+```{r input, include =FALSE}
+switch(sys_user,
+       dieulinh = {
+sales <- db_download("C011", "MSR_SALES_DEMO")
+sales_rr <- db_download("C011", "MSR_SALES_DEMO", "sales_rr")
+
+remote <- db_download("C011", "MSR_SALES_REMOTE_DEMO")
+remote_rr <- db_download("C011", "MSR_SALES_REMOTE_DEMO", "sales_rr")
+
+return <- db_download("C011", "MSR_RETURN_DEMO")
+return_rr <- db_download("C011", "MSR_RETURN_DEMO", "sales_rr")        
+       }
+         ,{
+sales <- read_csv("/home/dieulinh/Dropbox/raw_data/MSR_SALES_DEMO.csv", col_types = cols(.default = "c"))
+sales_rr <- read_csv("/home/dieulinh/Dropbox/raw_data/sales_rr.csv", col_types = cols(.default = "c"))
+
+remote <- read_csv("/home/dieulinh/Dropbox/raw_data/MSR_SALES_REMOTE_DEMO.csv", col_types = cols(.default = "c"))
+remote_rr <- read_csv("/home/dieulinh/Dropbox/raw_data/remote_rr.csv", col_types = cols(.default = "c"))
+
+return <- read_csv("/home/dieulinh/Dropbox/raw_data/MSR_RETURN_DEMO.csv", col_types = cols(.default = "c"))
+return_rr <- read_csv("/home/dieulinh/Dropbox/raw_data/return_rr.csv", col_types = cols(.default = "c"))
+       })
+
+store <- get_dm_data("C011", "MSR_store")
+promotion <- get_dm_data("C011", "MSR_promotion")
+```
+
+```{r, include=FALSE}
+store$region_lb[store$region_lb==""] <- NA
+
+sales$work_date <- as.Date(sales$work_date, format= "%d/%m/%Y")
+sales_rr$sales_date <- as.Date(sales_rr$sales_date, format= "%d/%m/%Y")
+
+date <- tryCatch({
+  unique(sales_rr$sales_date) %>% na.omit()},
+  warning = function(warn) warn,
+  error = function(err) err)
+
+region <- tryCatch({
+  region <- unique(store$region_id)
+  names(region) <- unique(store$region_lb)
+  region
+},
+  warning = function(warn) warn,
+  error = function(err) err
+)
+
+date_choices <- if(!any(c("error", "warning") %in% class(date))) {date} else {Sys.Date()}
+region_choices <- if(!any(c("error", "warning") %in% class(region))) {region} else {"Agency error"}
+
+```
+
+```{r, include=FALSE}
+##Thông tin khách hàng
+col_sales <- c("salerep_id","salerep_lb", 
+         "store_id", "store_lb", 
+         "store_add", "store_hnumber", "store_street", "store_ward_lb", "store_district_lb",
+         "city_id","city_lb", "region_id","region_lb", 
+         "store_type_lb", "visitday_lb",
+         "store_phone", "store_doe",
+         "store_owner_name", "store_owner_dob")
+
+colname_sales <- c("Mã salesrep","Tên salesrep", 
+             "Mã nhà thuốc","Tên nhà thuốc", 
+             "Địa chỉ", "Số nhà", "Đường", "Phường/Xã", "Quận/Huyện", 
+             "Mã thành phố", "Thành phố", "Mã khu vực","Khu vực", 
+             "Loại  khách hàng", "Ngày viếng thăm", 
+             "SĐT", "Email",
+             "Tên chủ NT", "Ngày sinh chủ NT")
+
+tt_kh <- store %>% select(col_sales)
+names(tt_kh) <- colname_sales
+```
+
+```{r, include=FALSE}
+##Sản lượng - Doanh thu - Khuyến mại - CT MKT
+
+#revenue <- full_join(sales_rr, sales, by = c( "X_PARENT_AURI" = "X_URI" ,
+#                                              "sales_date" = "work_date",
+#                                              "rp_store_id" = "store_id",
+#                                              "rp_store_lb" = "store_lb",
+#                                              "product_id" = "product_list",
+#                                              "sales_code_rp" = "sales_code"))
+
+#revenue <- full_join(sales_rr, sales, by = c( "X_PARENT_AURI" = "X_URI", "sales_code_rp" = "sales_code"))
+                     
+sales$region <-
+  as.character(factor(revenue$region_id, 
+                      levels = rev(unique(store$region_id)),
+                      labels = rev(unique(store$region_lb))))
+
+
+col_sales <- c("region_id","region","staff_id", "fullname", "store_id", "store_lb", "work_date", "sales_code", "product_list", "product_lb","product_qty", "product_price", "all_marketg_type", "all_discount_percent", "all_discount_money", "all_discount_product", "all_discount_gift", "all_discount_money_reduce", "product_total_money", "register_mkt","order_remark")
+
+colname_sales <- c("Mã khu vực", "Khu vực","Mã salesrep", "Tên salesrep", "Mã nhà thuốc", "Tên nhà thuốc", "Ngày", "Mã đơn hàng", "Mã sản phẩm", "Tên sản phẩm","Số lượng", "Đơn giá","Loại CTMKT", "Chiết khấu %", "Chiết khấu số tiền","Tặng sản phẩm", "Quà tặng", "Tổng tiền giảm trừ trực tiếp", "Tổng hóa đơn","Đăng ký CT tích lũy","Ghi chú")
+
+```
+
+```{r, include=FALSE}
+#Trả hàng
+return$work_date <- as.Date(return$work_date, format= "%d/%m/%Y")
+return_rr$return_date <- as.Date(return_rr$return_date, format= "%d/%m/%Y")
+product_return <- full_join(return, return_rr, by= c("_URI" = "_PARENT_AURI",
+                                                     "return_code" = "return_code_rp",
+                                                     "store_id" = "rp_store_id",
+                                                     "store_lb" = "rp_store_lb",
+                                                     "work_date" = "return_date",
+                                                     "product_list" = "product_id"))
+
+product_return$region <-
+  as.character(factor(product_return$region_id, 
+                      levels = rev(unique(store$region_id)),
+                      labels = rev(unique(store$region_lb))))
+
+col_return <- c("region_id","region","staff_id", "fullname", "store_id", "store_lb", "work_date", "return_code", "receive_sales", "product_list", "product_lb","product_qty", "price", "product_total_money", "reason", "reason_detail", "receive", "order_remark")
+
+colname_return <- c("Mã khu vực", "Khu vực","Mã salesrep", "Tên salesrep", "Mã nhà thuốc", "Tên nhà thuốc", "Ngày", "Mã trả đơn hàng","Từ đơn hàng", "Mã sản phẩm", "Tên sản phẩm", "Số lượng", "Giá", "Tổng tiền", "Lý do trả", "Lý do chi tiết", "Thời điểm nhận hàng", "Ghi chú")
+
+trahang <- product_return %>% select(col_return)
+
+names(trahang) <- colname_return
+```
+
+```{r}
+choice <- reactive({
+  out <- revenue %>% filter(region == input$region)
+  out <- out %>% filter(work_date >= input$date[1] & work_date <= input$date[2])
+  out
+})
+
+```
+
+```{r}
+dt <- reactive({
+  doanhthu <- choice() 
+  doanhthu <- doanhthu[col_revenue]
+  names(doanhthu) <- colname_revenue
+  doanhthu
+})
+
+```
+
+```{r}
+fluidRow(
+  column(
+    width = 4,
+    selectInput(
+      inputId = "region",
+      label = "Khu vực",
+      choices = region_choices,
+      selected ="HCM 1"
+    )
+  ),
+  column(
+    width = 4,
+    dateRangeInput(
+      inputId = "date",
+      label = 'Nhập khoảng thời gian',
+      start = min(date_choices, na.rm = T), 
+      end = max(date_choices, na.rm = T),
+      min = min(date_choices, na.rm = T),
+      max = max(date_choices, na.rm = T),
+      language = "vi",
+      separator = "đến",
+      format = "dd-mm-yyyy"
+    )
+  )
+)
+
+fluidRow(
+  column(
+    width = 4,
+    DT::dataTableOutput("table")
+  ))
+```
+
+```{r}
+DT::renderDataTable(dt())
+```

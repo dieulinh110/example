@@ -1,0 +1,501 @@
+---
+title: '[MSR] Báo cáo Khách hàng mở mới'
+author: "Real - time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M:%S')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        orientation: rows
+        theme: flatly
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_ymwd <- function(x, which = "ymwd", by = c("work_date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    x[[by]] <- as.Date(x[[by]], "%d/%m/%Y")
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("w", which)) {
+        x$week <- stringi::stri_datetime_fields(x[[by]])$WeekOfMonth
+    }
+
+    if (grepl("d", which)) {
+        x$day <- lubridate::day(x[[by]])
+    }
+    x
+}
+
+
+current_week <- function (as_char = FALSE) {
+    now <- Sys.time()
+    now <- as.POSIXlt(now)
+    week <- stringi::stri_datetime_fields(now, tz = NULL)$WeekOfMonth
+    week
+}
+
+render_table <- function(data, logic = FALSE) {
+ datatable(data,
+           class = "nowrap stripe hover cell-border",
+           rownames = FALSE,
+           filter = "top",
+           options = list(scrollX = T,
+                          pageLength = 20,
+                          language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json")))
+    
+}
+
+```
+
+
+```{r packages, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("tidyr", "dplyr", "shiny", "xlsx", "RTA", "readr")
+sapply(pkgs, require, character.only = TRUE)
+
+
+switch(
+    sys_user,
+    {library("DT")},
+    shiny = {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## import data
+
+
+switch(
+    sys_user,
+    {
+      data_dir <- "~/MEGAsync/RTA/KINGSMEN/data/"
+      #try(msr_new_store <- read_csv(paste0(data_dir, "MSR_NEWEDIT_STORE_DEMO/MSR_NEWEDIT_STORE_DEMO.csv"), col_types = cols(.default = "c")))
+      try(msr_new_store <- get_dm_data("C011", "MSR_newedit_store"))
+      try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+
+    }, 
+    shiny = {
+      #try(msr_new_store <- get_family_data("C011", "MSR_NEWEDIT_STORE_DEMO"))
+      try(msr_new_store <- get_dm_data("C011", "MSR_newedit_store"))
+      try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+      
+    }
+)
+
+```
+
+
+```{r prepare-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## remove marked_delete
+msr_staff <- msr_staff[msr_staff$marked_as_deleted == 0, ]
+msr_new_store <- msr_new_store[msr_new_store$marked_as_deleted == 0, ]
+
+## replace with na
+#msr_new_store <- replace_with_na(msr_new_store)
+
+
+## remove testing instances
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+msr_new_store <- filter(msr_new_store, grepl("^dgw", username))
+
+```
+
+
+```{r calculation, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## 
+new_store <- select(msr_new_store, 
+                    work_date, staff_id, store_id, store_lb, store_hnumber, store_street, store_ward_lb,
+                    store_district_lb, store_owner_name, store_phone, region_lb, approve_status)
+new_store <- gen_ymwd(new_store, which = "ymw")
+
+
+## -----------------------------------------------------------------------------
+## merge label
+new_store <- left_join(new_store, select(msr_staff, supsd_id, supsd_lb, 
+                                         suprsm_id, suprsm_lb, supasm_lb, 
+                                         supasm_id, staff_id, staff_lb, npp_id, npp_lb), by = "staff_id")
+
+## -----------------------------------------------------------------------------
+## filtering data by user role
+
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "dieulinh") {
+    user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        new_store <- filter(new_store, staff_id == user_id)
+        msr_staff <- filter(msr_staff, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        new_store <- filter(new_store, supasm_id == user_id)
+        msr_staff <- filter(msr_staff, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        new_store <- filter(new_store, suprsm_id == user_id)
+        msr_staff <- filter(msr_staff, suprsm_id == user_id)
+    }
+
+    if (user_role == "SD") {
+        new_store <- filter(new_store, supsd_id == user_id)
+        msr_staff <- filter(msr_staff, supsd_id == user_id)
+    }
+}
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2017:current_year()
+input_months <- c(1:12)
+input_weeks <- c(1:4)
+input_dates <- c(unique(new_store$work_date), Sys.Date())
+
+input_levels <- c("SD", "RSM", "ASM", "SR")
+
+input_SD <- distinct(select(msr_staff, supsd_id, supsd_lb))
+input_SD <- filter(input_SD, supsd_id != "", !is.na(supsd_id))
+input_SD <- c("Tất cả" = "All", make_dict(input_SD$supsd_lb, input_SD$supsd_id))
+
+input_RSM <- distinct(select(msr_staff, suprsm_id, suprsm_lb))
+input_RSM <- filter(input_RSM, suprsm_id != "", !is.na(suprsm_id))
+input_RSM <- c("Tất cả" = "All", make_dict(input_RSM$suprsm_lb, input_RSM$suprsm_id))
+
+input_ASM <- distinct(select(msr_staff, supasm_id, supasm_lb))
+input_ASM <- filter(input_ASM, supasm_id != "", !is.na(supasm_id))
+input_ASM <- c("Tất cả" = "All", make_dict(input_ASM$supasm_lb, input_ASM$supasm_id))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+
+```
+
+
+
+
+```{r server-processing}
+
+
+re_filter <- reactive({
+  month_ip <- input$month_ip
+  year_ip <- input$year_ip
+  week_ip <- input$week_ip
+  if (input$shown_by_ip == "select_week") {
+      out <- filter(new_store,
+                    week %in% week_ip, year %in% year_ip)
+
+  } else if (input$shown_by_ip == "select_month") {
+      out <- filter(new_store,
+                    month %in% month_ip, year %in% year_ip)
+  } else if (input$shown_by_ip == "select_day") {
+    validate(
+      need(input$date_ip[1] <= input$date_ip[2], 
+           "Khoảng thời gian bắt đầu phải nhỏ hơn khoảng thời gian kết thúc"))
+      
+    out <- filter(new_store,
+                    work_date >= input$date_ip[1], work_date <= input$date_ip[2])
+  }
+  
+  if(input$level_ip == "SR"){
+    out <- out
+    
+    if(input$SR_input != "All"){
+      out <- out %>% filter(staff_id %in% input$SR_input) 
+    }
+  }
+  
+  if(input$level_ip == "ASM"){
+    out <- out
+    if(input$ASM_input != "All"){
+      out <- out %>% filter(supasm_id %in% input$ASM_input) 
+    }
+  }
+  
+  if(input$level_ip == "RSM"){
+    out <- out
+    if(input$RSM_input != "All"){
+      out <- out %>% filter(suprsm_id %in% input$RSM_input) 
+    }
+  }
+  
+  if(input$level_ip == "SD"){
+    out <- out
+    if(input$SD_input != "All"){
+      out <- out %>% filter(supsd_id %in% input$SD_input) 
+    }
+  }
+  validate(need(nrow(out) > 0, "Không có dữ liệu trong khoảng thời gian này"))
+  
+  return(out)
+})
+
+re_qty <- reactive({
+  out <- re_filter()
+  out <- count(out, staff_id)
+  out <- left_join(out, msr_staff, by = "staff_id")
+  
+  out <- select(out,
+                supsd_lb, suprsm_lb, supasm_lb, staff_lb, region_lb, n)
+  if (nrow(out) > 0) {
+    out <- bind_rows(out, data.frame(staff_lb = "Tổng", n = sum(out$n, na.rm = T)))
+  }
+  name_dict <- make_dict(c("supsd_lb", "suprsm_lb", "supasm_lb", "staff_lb", "region_lb", "n"),
+                         c("SD", "RSM", "ASM", "Tên SR", "Khu vực", "Số lượng NT mở mới"))
+  names(out) <- encode(names(out), name_dict)
+  out
+})
+
+re_detail <- reactive({
+  out <- re_filter()
+  
+  out$store_district <- out$store_district_lb
+    
+  out <- select(out,
+                region_lb, store_district, suprsm_lb, supasm_lb, npp_id, npp_lb,
+                staff_id, staff_lb, store_id, store_lb, store_owner_name, 
+                store_phone, store_hnumber, store_street, store_ward_lb, store_district_lb, work_date,
+                approve_status)
+  
+  
+  
+  name_dict <- make_dict(c("region_lb", "store_district", "suprsm_lb", "supasm_lb", "npp_id", "npp_lb",
+                           "staff_id", "staff_lb", "store_id", "store_lb", "store_owner_name", 
+                           "store_phone", "store_hnumber", "store_street", "store_ward_lb", "store_district_lb",
+                           "work_date", "approve_status"),
+                         c("Khu vực", "Địa bàn", "RSM", "ASM", "Mã NPP", "Tên NPP", "Mã Salerep", "Tên SaleRep",
+                           "Mã NT", "Tên NT", "Tên người đại diện", "SĐT", "Số nhà", "Đường",
+                           "Phường/Xã","Quận/Huyện", "Ngày mở mới", "Trạng thái"))
+  names(out) <- encode(names(out), name_dict)
+  out
+})
+
+output$qty_tbl <- renderDataTable(render_table(re_qty()))
+output$detail_tbl <- renderDataTable(render_table(re_detail()))
+
+#output$qty_xls <- downloadHandler(
+#    filename = paste0("[Kingsmen] Bao-cao-so-luong-nha-thuoc-mo-moi_", format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+#    content = function(file) {
+#        ## make workbook
+#        wb <- create_excel_file(re_qty(),
+#                                sheet_name = "Báo cáo số lượng nhà thuốc mở mới",
+#                                sheet_title = c("[Kingsmen] Báo cáo số lượng nhà thuốc mở mới"))
+#        ## save workbook to a file
+#        saveWorkbook(wb, file)
+#    }
+#)
+
+output$detail_xls <- downloadHandler(
+    filename = paste0("[Kingsmen] Thong-tin-nha-thuoc-mo-moi_", format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        wb <- create_excel_file(re_detail(),
+                                sheet_name = "Thông tin nhà thuốc mở mới",
+                                sheet_title = c("[Kingsmen] Thông tin nhà thuốc mở mới"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+```
+
+Inputs {.sidebar}
+================================================================================
+
+```{r input-panel}
+
+radioButtons(
+            inputId = "shown_by_ip",
+            label = tags$strong("Chọn báo cáo xem theo:"),
+            choices = c("Theo ngày" = "select_day",
+                        "Theo tuần" = "select_week",
+                        "Theo tháng" = "select_month")
+)
+
+tags$br()
+
+conditionalPanel(
+        condition = "input.shown_by_ip == 'select_day'",
+        dateRangeInput(
+          inputId = "date_ip",
+          label = "Chọn ngày:",
+          min = min(input_dates),
+          max = Sys.Date(),
+          start = min(input_dates),
+          end = Sys.Date(),
+          language = "vi",
+          separator = "đến",
+          format = "dd-mm-yyyy"
+        )
+
+)
+
+conditionalPanel(
+        condition = "input.shown_by_ip == 'select_week'",
+        selectInput(
+          inputId = "week_ip",
+          label = "Chọn tuần:",
+          choices = input_weeks,
+          selected = current_week()
+        )
+
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+      inputId = "month_ip",
+      label = "Chọn tháng:",
+      choices = input_months,
+      selected = current_month()
+  )
+)
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'| input.shown_by_ip == 'select_week'",
+selectInput(
+      inputId = "year_ip",
+      label = "Chọn năm:",
+      choices = input_years,
+      selected = current_year()
+)
+)
+
+tags$br()
+
+
+fluidRow(
+  column(
+    width = 12,
+    radioButtons(
+               inputId ="level_ip",
+               label = tags$strong("Chọn cấp bậc:"),
+               choices = input_levels, 
+               selected = "SR")
+  )
+)
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.level_ip =='SR'",
+      selectInput(
+                inputId ="SR_input",
+                label ="Chọn SalesRep: ",
+                choice = input_SR)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='ASM'",
+      selectInput(
+                inputId ="ASM_input",
+                label ="Chọn ASM: ",
+                choice = input_ASM)),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='RSM'",
+      selectInput(
+                inputId ="RSM_input",
+                label ="Chọn RSM: ",
+                choice = input_RSM)),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='SD'",
+      selectInput(
+                inputId ="SD_input",
+                label ="Chọn SD: ",
+                choice = input_SD))
+      
+      
+    )
+  )
+
+tags$br()
+
+
+fluidRow(
+    column(
+        width = 2,
+        downloadButton(outputId = 'detail_xls', label = 'xlsx')
+    )
+)
+  
+```
+
+
+
+**Số lượng nhà thuốc mở mới**
+================================================================================
+
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "qty_tbl")
+    )
+)
+
+
+#fluidRow(
+#    column(
+#        width = 2,
+#        downloadButton(outputId = 'qty_xls', label = 'xlsx')
+#    )
+#)
+
+```
+
+**Thông tin chi tiết của nhà thuốc**
+===================================================================================
+
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "detail_tbl")
+    )
+)
+
+```

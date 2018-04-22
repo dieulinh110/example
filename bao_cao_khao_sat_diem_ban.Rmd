@@ -1,0 +1,537 @@
+---
+title: "Báo cáo khảo sát điểm bán - Kingsmen"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        theme: flatly
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("readr", "tidyr", "dplyr", "shiny", "xlsx", "RTA")
+sapply(pkgs, require, character.only = TRUE)
+
+switch(
+    sys_user,
+    anchu = {library("DT")},
+    {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+## -----------------------------------------------------------------------------
+## import data
+
+switch(
+    sys_user,
+    anchu = {
+        data_dir <- "~/rtanalytics-svnrepo/4.Analytics_South/1.Projects/2.Enterprises/1.DGW/Kingsmen/data/"
+        try(sup_checkin <- read_csv(paste0(data_dir, "DGW_CHECKIN/DGW_CHECKIN_DEMO.csv"), col_types = cols(.default = "c")))
+        try(sup_inventory <- read_csv(paste0(data_dir, "DGW_INVENTORY/DGW_INVENTORY_DEMO.csv"), col_types = cols(.default = "c")))
+        try(sup_inventory_re <- read_csv(paste0(data_dir, "DGW_INVENTORY/dgw_rr.csv"), col_types = cols(.default = "c")))
+        try(sup_posm <- read_csv(paste0(data_dir, "DGW_POSM/DGW_POSM_DEMO.csv"), col_types = cols(.default = "c")))
+        try(sup_posm_re <- read_csv(paste0(data_dir, "DGW_POSM/dgw_rr.csv"), col_types = cols(.default = "c")))
+        try(sup_competitor <- read_csv(paste0(data_dir, "DGW_COMPETITORS/DGW_COMPETITORS_DEMO.csv"), col_types = cols(.default = "c")))
+        try(sup_competitor_re <- read_csv(paste0(data_dir, "DGW_COMPETITORS/dgw_rr.csv"), col_types = cols(.default = "c")))
+        try(sup_survey_store <- read_csv(paste0(data_dir, "DGW_SURVEY_STORE/DGW_SURVEY_STORE_DEMO.csv"), col_types = cols(.default = "c")))
+        try(sup_survey_game <- read_csv(paste0(data_dir, "DGW_SURVEY_GAME/DGW_SURVEY_GAME_DEMO.csv"), col_types = cols(.default = "c")))
+        try(sup_checkout <- read_csv(paste0(data_dir, "DGW_CHECKOUT/DGW_CHECKOUT_DEMO.csv"), col_types = cols(.default = "c")))
+    }, {
+        try(sup_checkin <- get_family_data("C011", "DGW_CHECKIN_DEMO"))
+        try(sup_inventory <- get_family_data("C011", "DGW_INVENTORY_DEMO"))
+        try(sup_inventory_re <- get_family_data("C011", "DGW_INVENTORY_DEMO", "dgw_rr"))
+        try(sup_posm <- get_family_data("C011", "DGW_POSM_DEMO"))
+        try(sup_posm_re <- get_family_data("C011", "DGW_POSM_DEMO", "dgw_rr"))
+        try(sup_competitor <- get_family_data("C011", "DGW_COMPETITORS_DEMO"))
+        try(sup_competitor_re <- get_family_data("C011", "DGW_COMPETITORS_DEMO", "dgw_rr"))
+        try(sup_survey_store <- get_family_data("C011", "DGW_SURVEY_STORE_DEMO"))
+        try(sup_survey_game <- get_family_data("C011", "DGW_SURVEY_GAME_DEMO"))
+        try(sup_checkout <- get_family_data("C011", "DGW_CHECKOUT_DEMO"))
+    }
+)
+
+dgw_store <- get_dm_data("C011", "DGW_store")
+msr_posm <- get_dm_data("C011", "MSR_posm")
+
+```
+
+```{r prepare-data, include=FALSE}
+
+## merge repeats
+sup_inventory_re <- left_join(sup_inventory_re, sup_inventory, by = "instanceID")
+sup_posm_re <- left_join(sup_posm_re, sup_posm, by = "instanceID")
+sup_competitor_re <- left_join(sup_competitor_re, sup_competitor, by = "instanceID")
+
+## convert -999999
+sup_checkin <- replace_with_na(sup_checkin)
+sup_inventory_re <- replace_with_na(sup_inventory_re)
+sup_posm_re <- replace_with_na(sup_posm_re)
+sup_competitor_re <- replace_with_na(sup_competitor_re)
+sup_survey_store <- replace_with_na(sup_survey_store)
+sup_survey_game <- replace_with_na(sup_survey_game)
+sup_checkout <- replace_with_na(sup_checkout)
+
+shared_colnames <- make_dict(c("staff_id", "staff_lb", "region_id", "region_lb",
+                               "work_date", "work_time",
+                               "store_id", "store_lb", "store_add"),
+                             c("Mã NV", "Tên NV", "Mã KV", "Khu vực",
+                               "Ngày", "Thời gian", "Mã NT", "Tên NT", "Địa chỉ"))
+
+## -----------------------------------------------------------------------------
+##
+
+effective_dict <- make_dict(c(1, 2), c("Có hiệu quả", "Không hiệu quả"))
+region_dict <- distinct(select(dgw_store, region_id, region_lb))
+region_dict <- make_dict(region_dict$region_id, region_dict$region_lb)
+
+## -----------------------------------------------------------------------------
+##
+
+sup_posm_re <- mutate(sup_posm_re, effective = encode(effective, effective_dict))
+sup_posm_re <- mutate(sup_posm_re, region_lb = encode(region_id, region_dict))
+sup_posm_re <- left_join(sup_posm_re, select(dgw_store, staff_id, staff_lb),
+                         by = "staff_id")
+
+sup_posm_re <- select(sup_posm_re,
+                      staff_id, staff_lb, region_id, region_lb,
+                      work_date, work_time,
+                      store_id, store_lb, store_add,
+                      posm_id, posm_lb, posm_qty, image1,
+                      posm_note, effective, content_share)
+
+posm_colnames <- make_dict(c("posm_id", "posm_lb", "posm_qty", "image1",
+                             "posm_note", "effective", "content_share"),
+                           c("Mã POSM", "Tên POSM", "Số lượng", "Hình ảnh",
+                             "Ghi chú", "Hiệu qủa bán hàng", "Chia sẻ"))
+
+## -----------------------------------------------------------------------------
+##
+
+sup_inventory_re <- mutate(sup_inventory_re, region_lb = encode(region_id, region_dict))
+sup_inventory_re <- left_join(sup_inventory_re, select(dgw_store, staff_id, staff_lb),
+                              by = "staff_id")
+sup_inventory_re <- select(sup_inventory_re,
+                           staff_id, staff_lb, region_id, region_lb,
+                           work_date, work_time,
+                           store_id, store_lb, store_add, product_id,
+                           product_lb, product_qty, image)
+
+inventory_colnames <- make_dict(c("product_id", "product_lb", "product_qty", "image"),
+                                c("Mã sản phẩm", "Tên sản phẩm", "Số lượng", "Hình ảnh"))
+
+## -----------------------------------------------------------------------------
+##
+
+sup_competitor_re <- mutate(sup_competitor_re, region_lb = encode(region_id, region_dict))
+sup_competitor_re <- left_join(sup_competitor_re, select(dgw_store, staff_id, staff_lb),
+                              by = "staff_id")
+
+sup_competitor_re <- select(sup_competitor_re,
+                            staff_id, staff_lb, region_id, region_lb, work_date,
+                            work_time, store_id, store_lb, store_add,
+                            company_id, company_lb, product,
+                            product_lb, product_img, marketing,
+                            marketing_img, marketing_content, fromdate,
+                            todate, range, price_nomal, price_promote,
+                            price_percent, prod_ingredient, prod_uses, prod_madein)
+
+competitor_colnames <- make_dict(c("company_id", "company_lb", "product",
+                                   "product_lb", "product_img", "marketing",
+                                   "marketing_img", "marketing_content", "fromdate",
+                                   "todate", "range", "price_nomal", "price_promote",
+                                   "price_percent", "prod_ingredient", "prod_uses", "prod_madein"),
+                                 c("Mã hãng cạnh tranh", "Tên hãng cạnh tranh",
+                                   "Sản phẩm", "Tên", "Hình ảnh", "CT marketing",
+                                   "Hình ảnh", "Nội dung", "Từ ngày", "Đến ngày",
+                                   "Áp dụng", "Giá thông thường", "Giá KM",
+                                   "%KM", "Thành phần", "Công dụng", "Xuất xứ"))
+
+## -----------------------------------------------------------------------------
+##
+
+sales_customer_dict <- make_dict(c(1, 0), c("Có", "Không"))
+reason_dict <- make_dict(c(1, 2), c("Người tiêu dùng tự tìm đến mua", "Nhà thuốc tư vấn"))
+
+
+sup_survey_store <- mutate(sup_survey_store, region_lb = encode(region_id, region_dict))
+sup_survey_store <- mutate(sup_survey_store, store_sales = encode(store_sales, sales_customer_dict))
+sup_survey_store <- mutate(sup_survey_store, store_reason = encode(store_reason, reason_dict))
+sup_survey_store <- left_join(sup_survey_store, select(dgw_store, staff_id, staff_lb),
+                              by = "staff_id")
+
+sup_survey_store <- select(sup_survey_store,
+                           staff_id, staff_lb, region_id, region_lb,
+                           work_date, work_time,
+                           store_id, store_lb, store_add,
+                           store_sales, store_reason, salerep_visit,
+                           posm_length, posm_width, posm_height,
+                           posm_img1, posm_exp_cal, posm_month_cal, posm_money,
+                           competitor_name_cal, competitor_length, competitor_width,
+                           competitor_height, competitor_img1, competitor_exp_cal,
+                           competitor_month_cal, competitor_money)
+
+survey_store_colnames <- make_dict(c("store_sales", "store_reason", "salerep_visit",
+                                     "posm_length", "posm_width", "posm_height",
+                                     "posm_img1", "posm_exp_cal", "posm_month_cal", "posm_money",
+                                     "competitor_name_cal", "competitor_length", "competitor_width",
+                                     "competitor_height", "competitor_img1", "competitor_exp_cal",
+                                     "competitor_month_cal", "competitor_money"),
+                                   c("Đã bán sản phẩm Kingsmen chưa", "Lý do",
+                                     "Số ngày salesrep viếng thăm", "POSM dài",
+                                     "POSM rộng", "POSM cao", "POSM ảnh",
+                                     "POSM thời hạn cho thuê", "Hình thức", "Số tiền",
+                                     "Tên đối thủ cạnh tranh", "POSM - Dài", "POSM - Rộng",
+                                     "POSM - Cao", "Hình ảnh", "TH cho thuê", "Hình thức_",
+                                     "Số tiền_"))
+
+## -----------------------------------------------------------------------------
+##
+
+sup_survey_game <- mutate(sup_survey_game, region_lb = encode(region_id, region_dict))
+sup_survey_game <- left_join(sup_survey_game, select(dgw_store, staff_id, staff_lb),
+                              by = "staff_id")
+
+sup_survey_game <- select(sup_survey_game,
+                          staff_id, staff_lb, region_id, region_lb,
+                          work_date, work_time,
+                          store_id, store_lb, store_add,
+                          player_name, player_phone,
+                          dgw_01, dgw_02, dgw_03, dgw_04,
+                          dgw_05, dgw_06, dgw_07, score_total)
+
+survey_game_colnames <- make_dict(c("player_name", "player_phone",
+                                    "dgw_01", "dgw_02", "dgw_03", "dgw_04",
+                                    "dgw_05", "dgw_06", "dgw_07", "score_total"),
+                                  c("Tên người tham gia", "SĐT",
+                                    paste0("Câu hỏi", 1:7), "Tổng điềm"))
+
+## -----------------------------------------------------------------------------
+##
+
+input_staffs <- distinct(select(dgw_store, checker_id, checker_lb))
+input_staffs <- make_dict(c("All", input_staffs$checker_lb),
+                          c("all", input_staffs$checker_id))
+
+input_regions <- distinct(select(dgw_store, region_id, region_lb))
+input_regions <- filter(input_regions, region_id != "", !is.na(region_id))
+input_regions <- make_dict(c("All", input_regions$region_lb),
+                           c("all", input_regions$region_id))
+
+```
+
+
+```{r, include=FALSE}
+
+## -----------------------------------------------------------------------------
+##
+
+re_sup_posm_re <- reactive({
+
+    if (input$group_ip == "select_staff") {
+
+        if (input$staff_ip != "all") {
+            out <- filter(sup_posm_re, staff_id %in% input$staff_ip)
+        } else {
+            out <- sup_posm_re
+        }
+
+    }
+
+    if (input$group_ip == "select_region") {
+
+        if (input$region_ip != "all") {
+            out <- filter(sup_posm_re, region_id %in% input$region_ip)
+        } else {
+            out <- sup_posm_re
+        }
+    }
+
+    names(out) <- encode(names(out), shared_colnames)
+    names(out) <- encode(names(out), posm_colnames)
+
+    return(out)
+})
+
+re_sup_inventory_re <- reactive({
+
+    if (input$group_ip == "select_staff") {
+
+        if (input$staff_ip != "all") {
+            out <- filter(sup_inventory_re, staff_id %in% input$staff_ip)
+        } else {
+            out <- sup_inventory_re
+        }
+
+    }
+
+    if (input$group_ip == "select_region") {
+
+        if (input$region_ip != "all") {
+            out <- filter(sup_inventory_re, region_id %in% input$region_ip)
+        } else {
+            out <- sup_inventory_re
+        }
+    }
+
+    names(out) <- encode(names(out), shared_colnames)
+    names(out) <- encode(names(out), inventory_colnames)
+
+    return(out)
+})
+
+
+re_sup_competitor_re <- reactive({
+
+    if (input$group_ip == "select_staff") {
+
+        if (input$staff_ip != "all") {
+            out <- filter(sup_competitor_re, staff_id %in% input$staff_ip)
+        } else {
+            out <- sup_competitor_re
+        }
+
+    }
+
+    if (input$group_ip == "select_region") {
+
+        if (input$region_ip != "all") {
+            out <- filter(sup_competitor_re, region_id %in% input$region_ip)
+        } else {
+            out <- sup_competitor_re
+        }
+    }
+
+    names(out) <- encode(names(out), shared_colnames)
+    names(out) <- encode(names(out), competitor_colnames)
+
+    return(out)
+})
+
+re_sup_survey_store <- reactive({
+
+    if (input$group_ip == "select_staff") {
+
+        if (input$staff_ip != "all") {
+            out <- filter(sup_survey_store, staff_id %in% input$staff_ip)
+        } else {
+            out <- sup_survey_store
+        }
+
+    }
+
+    if (input$group_ip == "select_region") {
+
+        if (input$region_ip != "all") {
+            out <- filter(sup_survey_store, region_id %in% input$region_ip)
+        } else {
+            out <- sup_survey_store
+        }
+    }
+
+    names(out) <- encode(names(out), shared_colnames)
+    names(out) <- encode(names(out), survey_store_colnames)
+
+    return(out)
+})
+
+re_sup_survey_game <- reactive({
+
+    if (input$group_ip == "select_staff") {
+
+        if (input$staff_ip != "all") {
+            out <- filter(sup_survey_game, staff_id %in% input$staff_ip)
+        } else {
+            out <- sup_survey_game
+        }
+
+    }
+
+    if (input$group_ip == "select_region") {
+
+        if (input$region_ip != "all") {
+            out <- filter(sup_survey_game, region_id %in% input$region_ip)
+        } else {
+            out <- sup_survey_game
+        }
+    }
+
+    names(out) <- encode(names(out), shared_colnames)
+    names(out) <- encode(names(out), survey_game_colnames)
+
+    return(out)
+})
+
+## -----------------------------------------------------------------------------
+##
+
+output$posm_tbl <- DT::renderDataTable(
+{re_sup_posm_re()},
+rownames = TRUE,
+class = "nowrap stripe hover cell-border",
+options = list(scrollX = TRUE,
+               ordering = TRUE,
+               pageLength = 15,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$inventory_tbl <- DT::renderDataTable(
+{re_sup_inventory_re()},
+class = "nowrap stripe hover cell-border",
+options = list(scrollX = TRUE,
+               ordering = TRUE,
+               pageLength = 15,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$competitor_tbl <- DT::renderDataTable(
+{re_sup_competitor_re()},
+class = "nowrap stripe hover cell-border",
+options = list(scrollX = TRUE,
+               ordering = TRUE,
+               pageLength = 15,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$store_review_tbl <- DT::renderDataTable(
+{re_sup_survey_store()},
+class = "nowrap stripe hover cell-border",
+options = list(scrollX = TRUE,
+               ordering = TRUE,
+               pageLength = 15,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$survey_game_tbl <- DT::renderDataTable(
+{re_sup_survey_game()},
+class = "nowrap stripe hover cell-border",
+options = list(scrollX = TRUE,
+               ordering = TRUE,
+               pageLength = 15,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+```
+
+Input {.sidebar}
+================================================================================
+
+```{r}
+
+radioButtons(
+    inputId = "group_ip",
+    label = tags$strong("Chọn xem báo cáo theo:"),
+    choices = c("Nhân viên" = "select_staff",
+                "Khu vực" = "select_region")
+)
+
+conditionalPanel(
+    condition = "input.group_ip == 'select_staff'",
+    selectInput(
+        inputId = "staff_ip",
+        label = tags$strong("Chọn nhân viên:"),
+        choices = input_staffs
+    )
+)
+
+conditionalPanel(
+    condition = "input.group_ip == 'select_region'",
+    selectInput(
+        inputId = "region_ip",
+        label = tags$strong("Chọn khu vực:"),
+        choices = input_regions
+    )
+)
+
+```
+
+
+
+Tổng hợp kết quả khảo sát
+================================================================================
+
+
+
+
+
+POSM
+================================================================================
+
+#### Theo dõi trưng bày POSM
+
+
+```{r}
+
+tags$hr()
+
+DT::dataTableOutput(outputId = "posm_tbl")
+
+```
+
+Hàng tồn kho
+================================================================================
+
+#### Cập nhật tồn kho
+
+
+```{r}
+
+tags$hr()
+
+DT::dataTableOutput(outputId = "inventory_tbl")
+
+```
+
+Đối thủ cạnh tranh
+================================================================================
+
+
+#### Theo dõi đối thủ cạnh tranh
+
+
+```{r}
+
+tags$hr()
+
+DT::dataTableOutput(outputId = "competitor_tbl")
+
+```
+
+
+Khảo sát nhà thuốc
+================================================================================
+
+#### Khảo sát điểm bán
+
+
+```{r}
+
+tags$hr()
+
+DT::dataTableOutput(outputId = "store_review_tbl")
+
+```
+
+
+Tìm hiểu Kingsmen
+================================================================================
+
+#### Chương trình Tìm Hiểu Kingsmen Nhận Quà Hấp Dẫn
+
+```{r}
+
+tags$hr()
+
+DT::dataTableOutput(outputId = "survey_game_tbl")
+
+```

@@ -1,0 +1,640 @@
+---
+title: "Báo cáo số lượng nhà thuốc NPP"
+author: "Real - time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M:%S')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        orientation: rows
+        theme: flatly
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+#sys_user <- Sys.info()["user"]
+sys_user <- '##USERNAME##'
+```
+
+
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_ymd <- function(x, which = "ymd", by = c("work_date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    
+    x[[by]] <- lubridate::dmy(x[[by]])
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("d", which)) {
+        x$date <- lubridate::date(x[[by]])
+    }
+    x
+}
+```
+
+
+```{r packages, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("tidyr", "dplyr", "shiny", "xlsx", "RTA", "readr")
+sapply(pkgs, require, character.only = TRUE)
+
+
+switch(
+    sys_user,
+    {library("DT")},
+    {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## import data
+
+
+switch(
+    sys_user,
+    dieulinh = {
+      data_dir <- "/home/dieulinh/MEGAsync/RTA/KINGSMEN/raw_data/"
+    
+      try(npp_handover_order <- read_csv(paste0(data_dir, "NPP_HANDOVER_ORDER_TEST/NPP_HANDOVER_ORDER_TEST.csv"), col_types = cols(.default = "c")))
+      try(npp_handover_order_rr <- read_csv(paste0(data_dir, "NPP_HANDOVER_ORDER_TEST/npp_rr.csv"), col_types = cols(.default = "c")))
+      try(all_handover_order_rr <- read_csv(paste0(data_dir, "NPP_HANDOVER_ORDER_TEST/all_rr.csv"), col_types = cols(.default = "c")))
+      try(msr_sales <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/MSR_SALES_DEMO.csv"), col_types = cols(.default = "c")))
+      try(msr_sales_rr <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/sales_rr.csv"), col_types = cols(.default = "c")))
+      try(msr_remote <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/MSR_SALES_REMOTE_DEMO.csv"), col_types = cols(.default = "c")))
+      try(msr_remote_rr <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/sales_rr.csv"), col_types = cols(.default = "c")))
+      try(msr_checkin <- read_csv(paste0(data_dir, "MSR_CHECKIN_DEMO/MSR_CHECKIN_DEMO.csv"), col_types = cols(.default = "c")))
+      #try(msr_product <- get_dm_data("C011", "MSR_product"))
+      #try(msr_storeedit <- read_csv(paste0(data_dir, "MSR_NEWEDIT_STORE_DEMO/MSR_NEWEDIT_STORE_DEMO.csv"), col_types = cols(.default = "c")))
+      #try(msr_store <- read_csv(paste0(data_dir, "MSR_store.csv"), col_types = cols(.default = "c")))
+      #try(msr_staff <- read_csv(paste0(data_dir, "MSR_staff.csv"), col_types = cols(.default = "c")))
+     
+    }, {
+      try(npp_handover_order <- get_family_data("C011", "NPP_HANDOVER_ORDER_TEST"))
+      try(npp_handover_order_rr <- get_family_data("C011", "NPP_HANDOVER_ORDER_TEST", "npp_rr"))
+      try(all_handover_order_rr <- get_family_data("C011", "NPP_HANDOVER_ORDER_TEST", "all_rr"))
+      try(msr_sales <- get_family_data("C011", "MSR_SALES_DEMO"))
+      try(msr_sales_rr <- get_family_data("C011", "MSR_SALES_DEMO", "sales_rr"))
+      try(msr_remote <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO"))
+      try(msr_remote_rr <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO", "sales_rr"))
+      try(msr_checkin <- get_family_data("C011", "MSR_CHECKIN_DEMO"))
+      #try(msr_product <- get_dm_data("C011", "MSR_product"))
+      try(msr_storeedit <- get_dm_data("C011", "MSR_newedit_store"))
+      try(msr_store <- get_dm_data("C011", "MSR_store"))
+      try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+
+    }
+)
+
+try(msr_storeedit <- get_dm_data("C011", "MSR_newedit_store"))
+try(msr_store <- get_dm_data("C011", "MSR_store"))
+try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+
+
+
+#colname_out_month <- c("SD", "RSM", "ASM", "NPP", "SR", "Địa bàn", "Số lượng NT đang phục vụ thăm viếng", "Số lượng NT mua hàng", "Tỷ lệ KH mua hàng")
+
+#colname_out_day <- c("Ngày", colname_out_month)
+
+colname_out_buy <- c("Ngày", "SD", "RSM", "ASM", "NPP", "Mã SR","SR", "Loại hình NT", "Số lượng NT mua hàng", "Tỷ lệ KH mua hàng")
+
+colname_out_notbuy <- c("Ngày", "SD", "RSM", "ASM", "NPP", "Mã SR","SR", "Số NT không mua")
+colname_out_notlist <- c("Ngày", "SD", "RSM", "ASM", "NPP",
+						 "Mã SR", "Tên SR", 
+						 "Khu vực",
+						 "Mã NT", "Tên NT", 
+						 "Số nhà", "Đường", "Phường", 
+						 "Quận/Huyện", "Tỉnh/Thành phố", "Địa chỉ",
+						 "SĐT", "Chủ NT")
+
+```
+
+
+```{r prepare-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## join data
+
+msr_store <- filter(msr_store, marked_as_deleted == 0)
+msr_storeedit <- filter(msr_storeedit, marked_as_deleted == 0)
+msr_staff <- filter(msr_staff, marked_as_deleted == 0)
+
+msr_checkin <- replace_with_na(msr_checkin)
+msr_checkin <- filter(msr_checkin, !grepl("^DGW|TEST|^BDUST", store_id))
+
+
+msr_sales <- replace_with_na(msr_sales)
+msr_remote <- replace_with_na(msr_remote)
+
+msr_sales_remote <- bind_rows(msr_sales, msr_remote)
+msr_sales_remote <- filter(msr_sales_remote, !grepl("^DGW|TEST|^BDUST", store_id))
+
+msr_storeedit <- msr_storeedit %>% 
+                  select(store_id, store_lb, 
+                         store_hnumber, store_street, store_ward_lb, 
+                         store_district_lb, city_lb, 
+                         store_add, store_phone, store_owner_name,
+                         salerep_id = staff_id, salerep_lb = fullname)
+
+store <- bind_rows(msr_store, msr_storeedit)
+store[store == ""] <- NA
+#store$store_type_id[is.na(store$store_type_id)] <- "NA"
+#store$store_type_lb[is.na(store$store_type_lb)] <- "Chưa có loại hình"
+
+#Change type Date
+msr_sales_remote$work_date <- lubridate::dmy(msr_sales_remote$work_date)
+msr_checkin$work_date <- lubridate::dmy(msr_checkin$work_date)
+
+## remove testing instances
+
+msr_staff <- filter(msr_staff, username != "dgw_vthieu")
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+
+msr_sales_remote <- filter(msr_sales_remote, username != "dgw_vthieu")
+#msr_sales_remote <- filter(msr_sales_remote, grepl("^dgw", username))
+
+msr_checkin <- filter(msr_checkin, username != "dgw_vthieu")
+#msr_checkin <- filter(msr_checkin, grepl("^dgw", username))
+
+```
+
+
+```{r calculation, include=FALSE}
+
+## -----------------------------------------------------------------------------
+##Join data store
+msr_sales_remote <- left_join(msr_sales_remote, 
+                              select(store, store_type_id, store_id),
+                              by = "store_id")
+
+sales_remote <- msr_sales_remote %>% 
+  select(work_date, staff_id, store_id, store_type_id) %>% unique()
+
+
+## -----------------------------------------------------------------------------
+##Count by type store
+count_by_type <- sales_remote %>% 
+  count(work_date, staff_id, store_type_id) %>% 
+  rename(count_type = n) 
+
+##Count all store
+count_total_type <- sales_remote %>% 
+  count(work_date, staff_id) %>% 
+  rename(count_total = n)
+
+##Join 2 count data
+count_customer <- left_join(count_by_type, count_total_type, 
+                            by = c("work_date", "staff_id"))
+
+count_customer$per_sale <- round(count_customer$count_type *100 / count_customer$count_total, 2)
+
+count_customer <- left_join(count_customer, 
+                            select(msr_staff, staff_id, staff_lb, supsd_id, supsd_lb, 
+                                   suprsm_id, suprsm_lb, 
+                                   supasm_id, supasm_lb, npp_id, npp_lb),
+                            by = "staff_id")
+
+count_customer$store_type_id[is.na(count_customer$store_type_id)] <- "None"
+count_customer$month <- format(count_customer$work_date, "%m/%Y")
+        
+
+
+## -----------------------------------------------------------------------------
+##Count checkin data
+msr_sales_remote <- left_join(msr_sales_remote, 
+                              select(store, store_type_id, store_id),
+                              by = "store_id")
+
+checkin <- msr_checkin %>% 
+  select(work_date, staff_id, store_id) %>% unique()
+  
+
+count_checkin <- checkin %>% 
+  count(work_date, staff_id) %>% 
+  rename(count_checkin = n)
+
+## -----------------------------------------------------------------------------
+##Store not buy
+count_customer2 <- count_customer %>% 
+  group_by(work_date, staff_id) %>% 
+  summarise(count_type = sum(count_type, na.rm = T)) %>% 
+  ungroup()
+
+count_customer2 <- full_join(count_customer2, count_checkin, 
+                             by = c("work_date", "staff_id"))
+
+
+count_customer2$count_type[is.na(count_customer2$count_type)] <- 0 
+
+
+count_customer2$count_store_notbuy <- count_customer2$count_checkin - count_customer2$count_type
+
+##Join data final
+count_customer2 <- filter(count_customer2, count_store_notbuy > 0)
+
+count_customer2 <- left_join(count_customer2, 
+                             select(msr_staff, staff_id, staff_lb, supsd_id, supsd_lb, 
+                                   suprsm_id, suprsm_lb, 
+                                   supasm_id, supasm_lb, npp_id, npp_lb),
+                            by = "staff_id")
+
+count_customer2$month <- format(count_customer2$work_date, "%m/%Y")
+        
+
+## -----------------------------------------------------------------------------
+##List store not buy
+sales_remote$check <- rep(1, nrow(sales_remote))
+
+sale_check <- left_join(checkin, sales_remote, by = c("work_date", "staff_id", "store_id"))
+
+sale_check <- filter(sale_check, !(check %in% 1))
+
+sale_check <- sale_check %>% unique()
+
+##Join data final
+store_not_sale <- left_join(sale_check, select(store, -store_type_id, -npp_id, -npp_lb), 
+                                          by = c("store_id"))
+
+#store_not_sale <- left_join(store_not_sale, npp, by = c("staff_id" = "salerep_id"))
+store_not_sale <- left_join(store_not_sale, 
+                            select(msr_staff, staff_id, staff_lb, supsd_id, supsd_lb, 
+                                   suprsm_id, suprsm_lb, 
+                                   supasm_id, supasm_lb, npp_id, npp_lb),
+                            by = "staff_id")
+store_not_sale$month <- format(store_not_sale$work_date, "%m/%Y")
+
+
+## -----------------------------------------------------------------------------
+## filtering data by user role
+
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "dieulinh") {
+    user_name <- "dgw_lnhduy"
+    #user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+    
+    if (user_role == "SR") {
+        count_customer <- filter(count_customer, staff_id == user_id)
+        count_customer2 <- filter(count_customer2, staff_id == user_id)
+        store_not_sale <- filter(store_not_sale, staff_id == user_id)
+	  	msr_staff <- filter(msr_staff, staff_id == user_id)
+    }
+
+    if (user_role == "NPP") {
+        count_customer <- filter(count_customer, npp_id == user_id)
+        count_customer2 <- filter(count_customer2, npp_id == user_id)
+        store_not_sale <- filter(store_not_sale, npp_id == user_id)
+	  	msr_staff <- filter(msr_staff, npp_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        count_customer <- filter(count_customer, supasm_id == user_id)
+        count_customer2 <- filter(count_customer2, supasm_id == user_id)
+        store_not_sale <- filter(store_not_sale, supasm_id == user_id)
+	  	msr_staff <- filter(msr_staff, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        count_customer <- filter(count_customer, suprsm_id == user_id)
+        count_customer2 <- filter(count_customer2, suprsm_id == user_id)
+        store_not_sale <- filter(store_not_sale, suprsm_id == user_id)
+	  	msr_staff <- filter(msr_staff, suprsm_id == user_id)
+    }
+
+    if (user_role == "SD") {
+        count_customer <- filter(count_customer, supsd_id == user_id)
+        count_customer2 <- filter(count_customer2, supsd_id == user_id)
+        store_not_sale <- filter(store_not_sale, supsd_id == user_id)
+	    msr_staff <- filter(msr_staff, supsd_id == user_id)
+    }
+}
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2017:current_year()
+input_months <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+
+input_dates <- unique(c(msr_sales_remote$work_date, msr_checkin$work_date))
+
+#input_type <- unique(store$store_type_id)
+store$store_type_id[is.na(store$store_type_id)] <- "None"
+store$store_type_lb[is.na(store$store_type_lb)] <- "Chưa phân loại"
+
+input_type <- make_dict(unique(store$store_type_lb), unique(store$store_type_id))
+
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- make_dict(input_SR$staff_lb, input_SR$staff_id)
+```
+
+
+
+```{r server-processing}
+
+out_table <- reactive({
+  if (input$shown_by_report == "buy") {
+    out <- filter(count_customer,
+                  staff_id %in% input$SR_ip,
+                  store_type_id %in% input$select_type)
+      if (input$shown_by_ip == "select_day") {
+      out <- filter(out,
+                    work_date <= input$date_ip[2], work_date >= input$date_ip[1])
+                    
+     
+    } else if (input$shown_by_ip == "select_month") {
+      
+      month_ip <- paste0(input$month_ip, "/", input$year_ip)
+      
+      out <- filter(out, month %in% month_ip)
+		
+    }
+	
+	validate(need(nrow(out) > 0, ""))
+	
+	out <- out[, c("work_date", 
+				   "supsd_lb", "suprsm_lb", "supasm_lb", "npp_lb","staff_id", "staff_lb", 
+	  		   "store_type_id",
+	  		   "count_type", "per_sale")]
+	
+	names(out) <- colname_out_buy
+	out
+  } else if (input$shown_by_report == "not_buy") {
+    if (input$shown_by_ip == "select_day") {
+        validate(
+         need({input$date_ip[1] <= input$date_ip[2]}, 
+               "Khoảng thời gian bắt đầu phải nhỏ hơn thời gian kết thúc"))
+          
+          out <- filter(count_customer2,
+                      work_date <= input$date_ip[2], work_date >= input$date_ip[1], 
+                      staff_id %in% input$SR_ip)
+        
+        
+      
+    } else if (input$shown_by_ip == "select_month") {
+      
+        month_ip <- paste0(input$month_ip, "/", input$year_ip)
+       
+        out <- filter(count_customer2, month %in% month_ip, staff_id %in% input$SR_ip)
+        
+        
+    }
+	
+	validate(need(nrow(out) > 0, ""))
+        
+    out <- out[, c("work_date", 
+				         "supsd_lb", "suprsm_lb", "supasm_lb", "npp_lb","staff_id", "staff_lb", 
+				         "count_store_notbuy")]
+
+  	names(out) <- colname_out_notbuy
+	out
+   
+  }
+ 
+})
+
+
+
+out_table1 <- reactive({
+  if (input$shown_by_report == "not_buy") {
+      if (input$shown_by_ip == "select_day") {
+      validate(
+        need({input$date_ip[1] <= input$date_ip[2]}, 
+             "Khoảng thời gian bắt đầu phải nhỏ hơn thời gian kết thúc"))
+        
+      out <- filter(store_not_sale,
+                    work_date <= input$date_ip[2], work_date >= input$date_ip[1], staff_id %in% input$SR_ip)
+      
+      
+      
+    } else {
+      month_ip <- paste0(input$month_ip, "/", input$year_ip)
+      
+      
+      out <- filter(store_not_sale, month %in% month_ip, staff_id %in% input$SR_ip)
+      
+    }
+	 
+   validate(
+       need(nrow(out) > 0, ""))
+    
+   out <- out[, c("work_date", "supsd_lb", "suprsm_lb", "supasm_lb",
+				  "npp_lb","staff_id", "staff_lb", 
+				  "region_lb",
+				  "store_id", "store_lb", 
+				  "store_hnumber", "store_street", "store_ward_lb", 
+				  "store_district_lb", "city_lb", "store_add",
+				  "store_phone", "store_owner_name")]
+   names(out) <- colname_out_notlist
+   out
+  }
+  
+ 
+})
+
+
+output$output_tbl <- DT::renderDataTable(
+    {out_table()},
+    class = "nowrap stripe hover cell-border",
+    rownames = FALSE,
+    filter = "top",
+    options = list(scrollX=TRUE,
+                   pageLength = 20,
+                   language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$output_xls <- downloadHandler(
+    filename = paste0("NUMBER_OF_CUSTOMER_", format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        wb <- create_excel_file(out_table(),
+                                sheet_name = "Sô Lượng KH",
+                                sheet_title = c("Number of Customer"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+output$output_tbl1 <- DT::renderDataTable(
+    {out_table1()},
+    class = "nowrap stripe hover cell-border",
+    rownames = FALSE,
+    filter = "top",
+    options = list(scrollX=TRUE,
+                   pageLength = 20,
+                   language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$output_xls1 <- downloadHandler(
+    filename = paste0("LIST_OF_CUSTOMER_", format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        wb <- create_excel_file(out_table1(),
+                                sheet_name = "Danh Sách KH",
+                                sheet_title = c("List of Customer"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+
+```
+
+Inputs {.sidebar}
+----------------------------------------------------------------------
+
+```{r input-panel}
+
+
+radioButtons(
+            inputId = "shown_by_report",
+            label = tags$strong("Chọn xem báo cáo:"),
+            choices = c("Khách hàng mua hàng" = "buy",
+                        "Khách hàng không mua hàng" = "not_buy")
+        )
+
+tags$br()
+
+radioButtons(
+            inputId = "shown_by_ip",
+            label = tags$strong("Chọn xem dữ liệu theo:"),
+            choices = c("Ngày" = "select_day",
+                        "Tháng" = "select_month")
+        )
+
+
+tags$br()
+
+
+conditionalPanel(
+        condition = "input.shown_by_ip == 'select_day'",
+        dateRangeInput(
+                    inputId = "date_ip",
+                    label = "Chọn ngày:",
+                    min = min(input_dates),
+                    max = Sys.Date(),
+                    start = min(input_dates),
+                    end = Sys.Date(),
+                    format = "dd-mm-yyyy",
+                    separator = "đến",
+                    language = "vi"
+        )
+)
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+                          inputId = "year_ip",
+                          label = tags$strong("Chọn năm:"),
+                          choices = input_years,
+                          selected = current_year()
+              )
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+                            inputId = "month_ip",
+                            label = tags$strong("Chọn tháng:"),
+                            choices = input_months,
+                            selected = current_month(as_char = T)
+                )
+)
+ 
+tags$br()
+conditionalPanel(
+        condition = "input.shown_by_report == 'buy'",
+        selectInput(
+          inputId = "select_type",
+          label = "Chọn loại khách hàng",
+          choices = input_type
+  
+)
+)
+  
+tags$br()
+
+selectInput(
+  inputId = "SR_ip",
+  label = "Chọn SR:",
+  choices = input_SR
+)
+```
+
+Row
+-------------------------------------
+
+### Bảng tổng hợp
+
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "output_tbl")
+    )
+)
+
+fluidRow(
+    column(
+        width = 2,
+        renderUI(
+          if(nrow(out_table()) > 0) {
+        downloadButton(outputId = 'output_xls', label = 'xlsx')
+          }
+     ))
+)
+```
+
+Row
+-------------------------------------
+
+### Bảng tổng hợp chi tiết
+
+```{r}
+conditionalPanel(
+        condition = "input.shown_by_report == 'not_buy'",
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "output_tbl1")
+    )
+),
+
+fluidRow(
+    column(
+        width = 2,
+        renderUI(
+          if(nrow(out_table1()) > 0) {
+        downloadButton(outputId = 'output_xls1', label = 'xlsx')
+          }
+    ))
+))
+
+```

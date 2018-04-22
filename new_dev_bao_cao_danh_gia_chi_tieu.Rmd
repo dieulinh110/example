@@ -1,0 +1,969 @@
+---
+title: "Báo cáo chỉ số bán hàng Salesrep"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        theme: flatly
+---
+
+<style>
+    body .main-container {
+        max-width: 90%;
+    }
+</style>
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_month <- function(x, which = "ymw", by = c("date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    #x[[by]] <- as.POSIXct(x[[by]])
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+    
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("w", which)) {
+        x$week <- stringi::stri_datetime_fields(as.POSIXct(x[[by]]))$WeekOfMonth
+    }
+    
+    x
+}
+
+
+som <- function(date) {
+    date.lt <- as.POSIXlt(date) # add a month, then subtract a day:
+    mon <- date.lt$mon + 1
+    year <- date.lt$year
+    iso <- ISOdate(1900+year, mon, 1, hour=0)
+    as.Date(iso)
+}
+
+eom <- function(date) {
+    ## date character string containing POSIXct date
+    date.lt <- as.POSIXlt(date) # add a month, then subtract a day:
+    mon <- date.lt$mon + 2
+    year <- date.lt$year
+    year <- year + as.integer(mon==13) # if month was December add a year
+    mon[mon==13] <- 1
+    iso = ISOdate(1900+year, mon, 1, hour=0)
+    result = as.POSIXct(iso) - 86400 # subtract one day
+    as.Date(result)
+}
+
+number <- function(x) {format(x, big.mark = ",")}
+
+create_excel_file <- function(df,
+                              wb_type = "xlsx",
+                              sheet_title = NULL,
+                              sheet_name = NULL,
+                              sheet_subtitle = NULL) {
+
+    xlsx_add_title <- function(sheet, row_index, title, title_style) {
+        rows <- createRow(sheet, rowIndex = row_index)
+        sheet_title <- createCell(rows, colIndex = 2)
+        setCellValue(sheet_title[[1, 1]], title)
+        setCellStyle(sheet_title[[1, 1]], title_style)
+    }
+
+    set_column_width <- function(.df, .sheet) {
+        cols_width <- sapply(.df, function(x) max(nchar(x), na.rm = TRUE))
+        cols_width <- ifelse(cols_width < 0, 10,
+                      ifelse(cols_width >= 1 & cols_width <= 10, 15,
+                      ifelse(cols_width > 10 & cols_width <= 20, 20,
+                      ifelse(cols_width > 20 & cols_width <= 30, 30, cols_width))))
+        cols_width <- c(5, cols_width)
+        lapply(seq_along(.df), function(x) setColumnWidth(.sheet, colIndex = x, colWidth = cols_width[x]))
+    }
+
+    ## create an empty workbook
+    wb <- createWorkbook(type = wb_type)
+
+    ## define style for workbook
+    title_style <- CellStyle(wb) +
+        Font(wb,
+             color = "blue",
+             heightInPoints = 14,
+             isBold = TRUE,
+             underline = 0)
+
+    subtitle_style <- CellStyle(wb) +
+        Font(wb,
+             heightInPoints = 12,
+             isItalic = FALSE,
+             isBold = FALSE)
+
+    table_rownames_style <- CellStyle(wb) +
+        Font(wb,
+             isBold = FALSE)
+
+    table_colnames_style <- CellStyle(wb) +
+        Font(wb,
+             isBold = TRUE) +
+        Alignment(wrapText = TRUE,
+                  horizontal = "ALIGN_LEFT") +
+        Border(color = "black",
+               position = c("TOP", "BOTTOM"),
+               pen = c("BORDER_THIN", "BORDER_THIN"))
+
+    table_content_style <- CellStyle(wb,
+                                     alignment = Alignment(wrapText = TRUE,
+                                                           horizontal = "ALIGN_CENTER"))
+
+    ## create a new sheet
+    sheet1 <- createSheet(wb, sheetName = sheet_name)
+
+    xlsx_add_title(sheet1,
+                   row_index = 2,
+                   title = sheet_title,
+                   title_style = title_style)
+
+    ## add sheet content
+    addDataFrame(df,
+                 sheet1,
+                 startRow = 4,
+                 startColumn = 1,
+                 colnamesStyle = table_colnames_style,
+                 rownamesStyle = table_rownames_style,
+                 colStyle = table_content_style,
+                 row.names = TRUE)
+
+    ## change column width
+    set_column_width(df, sheet1)
+
+    return(wb)
+}
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("readr", "tidyr", "dplyr", "shiny", "xlsx", "RTA")
+sapply(pkgs, require, character.only = TRUE)
+
+switch(
+    sys_user,
+    {library("DT")},
+    shiny = {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+## -----------------------------------------------------------------------------
+## import data
+
+switch(
+    sys_user,
+   {
+      data_dir <- "~/MEGAsync/RTA/KINGSMEN/data/"
+      try(msr_plan <- read_csv(paste0(data_dir, "MSR_WEEKPLAN_DEMO/MSR_WEEKPLAN_DEMO.csv"), col_types= cols(.default = "c")))
+      try(msr_plan_rr <- read_csv(paste0(data_dir, "MSR_WEEKPLAN_DEMO/msr_rr.csv"), col_types= cols(.default = "c")))
+      try(msr_plan_rrr <- read_csv(paste0(data_dir, "MSR_WEEKPLAN_DEMO/msr_rrr.csv"), col_types= cols(.default = "c")))
+      try(msr_sales <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/MSR_SALES_DEMO.csv"), col_types= cols(.default = "c")))
+      try(msr_sales_rr <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/sales_rr.csv"), col_types= cols(.default = "c")))
+      try(msr_remote <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/MSR_SALES_REMOTE_DEMO.csv"), col_types= cols(.default = "c")))
+      try(msr_remote_rr <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/sales_rr.csv"), col_types= cols(.default = "c")))
+      
+      try(msr_target <- read_csv("~/MSR_target.csv", col_types= cols(.default = "c")))
+
+    }, 
+    shiny = {
+      try(msr_plan <- get_family_data("C011", "MSR_WEEKPLAN_DEMO"))
+      try(msr_plan_rr <- get_family_data("C011", "MSR_WEEKPLAN_DEMO", "msr_rr"))
+      try(msr_plan_rrr <- get_family_data("C011", "MSR_WEEKPLAN_DEMO", "msr_rrr"))
+      try(msr_sales <- get_family_data("C011", "MSR_SALES_DEMO"))
+      try(msr_sales_rr <- get_family_data("C011", "MSR_SALES_DEMO", "sales_rr"))
+      try(msr_remote <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO"))
+      try(msr_remote_rr <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO", "sales_rr"))
+      
+    }
+)
+
+	  try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+	  try(msr_product <- get_dm_data("C011", "MSR_product"))
+	  try(msr_store_oldnew <-get_dm_data("C011", "msr_store_oldnew"))
+
+```
+
+
+```{r prepare-data, include=FALSE}
+
+###Join raw and repeat data
+			   
+msr_sales_rr <- left_join(msr_sales_rr, msr_sales, by = "instanceID")
+msr_sales_rr <- replace_with_na(msr_sales_rr)	
+
+msr_remote_rr <- left_join(msr_remote_rr, msr_remote, by = "instanceID")
+msr_remote_rr <- replace_with_na(msr_remote_rr)
+	
+msr_sales_remote_rr <- bind_rows(msr_sales_rr, msr_remote_rr)
+msr_sales_remote <- bind_rows(msr_sales, msr_remote)
+
+#asm_rrr <- left_join(asm_rrr, asm_rr, by = c("_PARENT_AURI" = "_URI", "instanceID"))
+
+switch(
+    sys_user,{
+msr_plan_rr <- left_join(msr_plan_rr, msr_plan, by = c("X_PARENT_AURI" = "X_URI"))
+msr_plan_rrr <- left_join(msr_plan_rrr, msr_plan_rr, by = c("X_PARENT_AURI" = "X_URI")) 
+    }, 
+  shiny = {
+ msr_plan_rr <- left_join(msr_plan_rr, msr_plan, by = c("_PARENT_AURI" = "_URI"))
+ msr_plan_rrr <- left_join(msr_plan_rrr, msr_plan, by = c("_PARENT_AURI" = "_URI"))   
+    })
+
+msr_plan_rrr <- replace_with_na(msr_plan_rrr)
+msr_plan_rr <- replace_with_na(msr_plan_rr)
+	
+#msr_checkin <- replace_with_na(msr_checkin)
+## filter dm 
+msr_staff <- filter(msr_staff, marked_as_deleted == 0)
+msr_product <- filter(msr_product, marked_as_deleted == 0)
+
+
+### remove rta and test
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+#msr_staff <- filter(msr_staff, !grepl("dgw_vthieu", username))
+#msr_staff <- filter(msr_staff, !grepl("dgw_vthieu|dgw_lnhduy", username))
+#msr_staff <- filter(msr_staff, !grepl("Inactive", staff_status))
+
+msr_sales_remote <- filter(msr_sales_remote, grepl("^dgw", username))
+msr_sales_remote_rr <- filter(msr_sales_remote_rr, grepl("^dgw", username))
+#msr_sales_remote <- filter(msr_sales_remote, !grepl("dgw_vthieu", username))
+#msr_sales_remote <- filter(msr_sales_remote, !grepl("dgw_vthieu|dgw_lnhduy", username))
+	
+msr_plan <- filter(msr_plan, grepl("^dgw", username))
+msr_plan_rr <- filter(msr_plan_rr, grepl("^dgw", username))
+msr_plan_rrr <- filter(msr_plan_rrr, grepl("^dgw", username))
+#asm_rr <- filter(asm_rr, !grepl("dgw_vthieu", username))
+#asm_rr <- filter(asm_rr, !grepl("dgw_vthieu|dgw_lnhduy", username))
+
+#msr_newedit <- filter(msr_newedit, grepl("^dgw", username))
+#msr_newedit <- filter(msr_newedit, !grepl("dgw_vthieu", username))
+#msr_newedit <- filter(msr_newedit, !grepl("dgw_vthieu|dgw_lnhduy", username))
+			   
+## change id
+change_id <- function(data) {
+out <- left_join(data, msr_store_oldnew, by = c("store_id" = "store_id_old")) 
+out <- mutate(out, store_id = ifelse(is.na(store_id_new), store_id, store_id_new))
+out
+}
+			   
+msr_sales_remote_rr <- change_id(msr_sales_remote_rr)
+msr_sales_remote <- change_id(msr_sales_remote)
+#msr_plan <- change_id(msr_plan)
+msr_plan_rr <- change_id(msr_plan_rr)
+#msr_plan_rrr <- change_id(msr_plan_rrr)
+
+
+```
+
+
+```{r compute-revenue, include=FALSE}
+
+### Create data target by month and week
+msr_target <- tidyr::separate(msr_target, period, into = c("month", "year"), sep = "/")
+
+msr_target[, c("month", "year")] <- sapply(msr_target[, c("month", "year")], as.double)
+msr_target <- as.data.frame(lapply(msr_target, function(x) gsub(",|-", "", x)))
+msr_target <- replace_with_na(msr_target, "")
+
+msr_target_week <- msr_target %>% 
+    select(username, year, month, contains("target_revenue_w")) %>% 
+    gather(target_week, target_revenue_total, -username, -year, -month) %>% 
+    mutate(week = as.double(gsub("\\D", "", target_week)))
+
+
+## -----------------------------------------------------------
+## Đếm store mở mới theo từng nhóm hàng
+msr_sales_remote$check <- "sr"
+
+msr_sales_remote_rr$check <- "sr_rr"
+
+msr_target$check <- "t"
+
+msr_target_week$check <- "t_w"
+
+## -----------------------------------------------------------
+## Bảng gộp cuối cùng
+final <- bind_rows(msr_sales_remote, msr_sales_remote_rr,
+                   msr_target, msr_target_week)
+
+## -----------------------------------------------------------
+## Gộp với MSR_staff
+
+final <- left_join(final, msr_product, by = "product_id") 
+
+final <- left_join(final, 
+                   msr_staff[, c("username", "staff_id", "staff_lb", "staff_add", "supasm_id", "supasm_lb", 
+                                 "suprsm_id", "suprsm_lb", "supsd_id", "supsd_lb",
+                                 "region_id", "region_lb")], by = c("staff_id", "username"))
+
+final <- gen_ymwd(final, by = c("starttime"))
+
+final$product_total_money <- as.double(final$product_total_money)
+
+final <- gen_month(final)
+
+## filtering data by user role
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "dieulinh") {
+  	user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+  	#user_name <- 'dgw_nththanh'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        final <- filter(final, staff_id == user_id)
+        msr_staff <- filter(msr_staff, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        final <- filter(final, supasm_id == user_id)
+        msr_staff <- filter(msr_staff, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        final <- filter(final, suprsm_id == user_id)
+        msr_staff <- filter(msr_staff, suprsm_id == user_id)
+    }
+}
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2017:current_year()
+input_months <- c(1:12)
+#input_dates <- unique(c(msr_sales_remote$sales_date, msr_checkin$date))
+input_dates <- c(unique(as.Date("2018-01-12", "%Y-%m-%d")), Sys.Date())
+#input_weeks <- c(unique(final$week))
+input_weeks <- c(1:5)
+
+input_levels <- c("RSM", "ASM", "SR")
+
+input_RSM <- distinct(select(msr_staff, suprsm_id, suprsm_lb))
+input_RSM <- filter(input_RSM, suprsm_id != "", !is.na(suprsm_id))
+input_RSM <- c("Tất cả" = "All", make_dict(input_RSM$suprsm_lb, input_RSM$suprsm_id))
+
+input_ASM <- distinct(select(msr_staff, supasm_id, supasm_lb))
+input_ASM <- filter(input_ASM, supasm_id != "", !is.na(supasm_id))
+input_ASM <- c("Tất cả" = "All", make_dict(input_ASM$supasm_lb, input_ASM$supasm_id))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+
+input_SKU <- c("Tất cả" = "All", make_dict(msr_product$product_lb, msr_product$product_id))
+```
+
+```{r server-processing, include=FALSE}
+
+sketch <-  htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(rowspan = 3, 'SD'),
+      th(rowspan = 3, 'RSM'),
+      th(rowspan = 3, 'ASM'),
+      th(rowspan = 3, 'Khu vực'),
+      th(rowspan = 3, 'Mã Nhân viên'),
+      th(rowspan = 3, 'Tên Nhân viên'),
+      th(rowspan = 3, 'Địa bàn'),
+      th(rowspan = 3, 'Chức vụ'),
+      th(colspan = 4, 'Nhóm Kingsmen'),
+      th(colspan = 4, 'Nhóm Lion'),
+      th(colspan = 4, 'Nhóm DTN'),
+      th(rowspan = 3, 'Bao phủ - Chỉ tiêu'),
+      th(rowspan = 3, 'Bao phủ - Thực hiện')
+    ),
+    tr(
+      lapply(rep(c('Mở mới', 'Doanh số'), 3), th, colspan = 2)
+    ),
+    tr(
+      lapply(rep(c('Chỉ tiêu', 'Thực hiện'),6), th)
+    )
+  )
+))
+
+
+re_filter <- reactive({
+  
+    dta <- final
+
+    if (input$shown_by_ip == "select_month") {
+        
+        out <- filter(dta, month %in% input$month_ip, year %in% input$year_ip)
+        
+        validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu trong khoảng thời gian này."))
+        
+
+    } else if (input$shown_by_ip == "select_day") {
+       
+        validate(
+          need(input$date_ip[1] <= input$date_ip[2],
+               "Khoảng thời gian bắt đầu phải nhỏ hơn khoảng thời gian kết thúc")
+        )
+
+        out <- filter(dta, date >= input$date_ip[1] & date <= input$date_ip[2])
+        
+        
+    } else if (input$shown_by_ip == "select_week") {
+
+        out <- filter(dta, week %in% input$week_ip, 
+                      month %in% input$month_ip, year %in% input$year_ip)
+        
+        out <- full_join(out, msr_target_week, by = c("week", "month", "year"))
+        
+        validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu trong khoảng thời gian này."))
+    }
+    
+    
+    if (input$level_ip == "RSM") {
+    	if (input$RSM_input != "All") { 
+    	    
+    	    out <- filter(out, suprsm_id %in% input$RSM_input)
+    	    
+    	}
+    }
+
+    if (input$level_ip == "ASM") {
+        if (input$ASM_input != "All") { 
+            
+            out <- filter(out, supasm_id %in% input$ASM_input)
+            
+	    }
+    }
+
+    if (input$level_ip == "SR") {
+        if (input$SR_input != "All") {  
+            
+            out <- filter(out, staff_id %in% input$SR_input)
+        }
+        
+    }
+    
+    if (exists("user_role")) {
+        if (user_role == "ADMIN") {
+        
+            if (input$SKU_ip != "All") {
+                
+                out <- filter(out, product_id %in% input$SKU_ip)
+            
+            }
+        
+        }
+    }
+    
+    validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu của nhân viên này.")
+    )
+    
+    out  
+    
+})
+
+name_dict <- make_dict(c("supsd_lb", "suprsm_lb", "supasm_lb", 
+                         "region_lb","staff_id", "staff_lb", 
+                         "staff_region", "title",
+                         "kingsmen_cover", 
+                         "kingsmen_cover.target", 
+                         "lion_cover", "lion_cover.target",
+                         "thongnhat_cover", "thongnhat_cover.target",
+                         "kingsmen_new", 
+                         "kingsmen_new.target", 
+                         "lion_new", "lion_new.target",
+                         "thongnhat_new", "thongnhat_new.target",
+                         "CAT0001.revenue", "CAT0001.target",
+                         "CAT0002.revenue", "CAT0002.target",
+                         "CAT0003.revenue", "CAT0003.target",
+                         "target_revenue_total", "revenue_total"),
+                       c("SD", "RSM", "ASM", "Khu vực", "Mã Nhân viên", "Tên Nhân viên",
+                         "Địa bàn", "Chức vụ",
+                         "Bao phủ Kingsmen - Thực hiện", "Bao phủ Kingsmen - Chỉ tiêu",
+                         "Bao phủ Lion - Thực hiện", "Bao phủ Lion - Chỉ tiêu",
+                         "Bao phủ DTN - Thực hiện", "Bao phủ DTN - Chỉ tiêu",
+                         "Mở mới Kingsmen - Thực hiện", "Mở mới Kingsmen - Chỉ tiêu",
+                         "Mở mới Lion - Thực hiện", "Mở mới Lion - Chỉ tiêu",
+                         "Mở mới DTN - Thực hiện", "Mở mới DTN - Chỉ tiêu",
+                         "Doanh số Kingsmen - Thực hiện", "Doanh số Kingsmen - Chỉ tiêu", 
+                         "Doanh số Lion - Thực hiện", "Doanh số Lion - Chỉ tiêu",
+                         "Doanh số DTN - Thực hiện", "Doanh số DTN - Chỉ tiêu",
+                         "Tổng doanh số - Chỉ tiêu", "Tổng doanh số - Thực hiện"))
+
+cols <- c("kingsmen_cover", 
+         "kingsmen_cover.target", 
+         "lion_cover", "lion_cover.target",
+         "thongnhat_cover", "thongnhat_cover.target",
+         "kingsmen_new", 
+         "kingsmen_new.target", 
+         "lion_new", "lion_new.target",
+         "thongnhat_new", "thongnhat_new.target",
+         "CAT0001.revenue", "CAT0001.target",
+         "CAT0002.revenue", "CAT0002.target",
+         "CAT0003.revenue", "CAT0003.target",
+         "target_revenue_total", "revenue_total")
+
+re_final <- reactive({
+   out_real_new <- re_filter() %>% filter(check %in% "sr")
+     
+   # out_real_new <- out_real_new %>%
+   #   mutate(new_store = strsplit(new_store, " ")) %>%
+   #   unnest(new_store) %>%
+   #   filter(new_store %in% "2" | new_store %in% "3")
+   #   
+   #out <- distinct(out)
+     
+   out_real_new <- out_real_new %>%
+     group_by(staff_id) %>%
+     summarise(kingsmen_new = sum(grepl("2", new_store), na.rm = TRUE),
+               lion_new = sum(grepl("3", new_store), na.rm = TRUE),
+               thongnhat_new = sum(grepl("4", new_store), na.rm = TRUE)) %>%
+     ungroup()
+   
+   
+   out_real_revenue <- re_filter() %>% filter(check %in% "sr_rr") %>% 
+    filter(!is.na(product_id))
+     
+   if (nrow(out_real_revenue) > 0) {
+   out_real_revenue <- out_real_revenue %>%
+     group_by(staff_id, categ_id) %>%
+     summarise(real_money = sum(product_total_money, na.rm = T)) %>%
+     ungroup() %>%
+     mutate(categ_id = paste0(categ_id, ".revenue")) %>%
+     spread(categ_id, real_money) 
+   } 
+   
+   
+  if (is.null(out_real_revenue$CAT0001.revenue)) {
+  out_real_revenue$CAT0001.revenue <- NA
+  }
+  
+  if (is.null(out_real_revenue$CAT0002.revenue)) {
+  out_real_revenue$CAT0002.revenue <- NA
+  }
+   
+   if (is.null(out_real_revenue$CAT0003.revenue)) {
+  out_real_revenue$CAT0003.revenue <- NA
+  }
+
+   
+   out_real_revenue <- out_real_revenue %>% 
+       mutate(revenue_total = rowSums(out_real_revenue[, c("CAT0001.revenue",
+                                  "CAT0002.revenue",
+                                  "CAT0003.revenue")], 
+                                  na.rm = TRUE))
+   
+   out_real_cover <- re_filter() %>% filter(check %in% "sr_rr")
+     
+   out_real_cover <- out_real_cover %>%
+        group_by(staff_id, categ_id) %>%
+        summarise(kingsmen_cover = n_distinct(store_id[categ_id %in% "CAT0001"], na.rm = TRUE),
+                  lion_cover = n_distinct(store_id[categ_id %in% "CAT0002"], na.rm = TRUE),
+                  thongnhat_cover = n_distinct(store_id[categ_id %in% "CAT0003"], na.rm = TRUE)) %>%
+        ungroup()
+
+   
+    out_final <- full_join(out_real_new, out_real_cover, by = "staff_id")
+    out_final <- full_join(out_final, out_real_revenue, by = "staff_id")
+    
+    if (input$shown_by_ip == "select_month") {
+      out_target <- filter(re_filter(), check == "t") 
+        
+    } else if (input$shown_by_ip == "select_week") {
+        
+        out_target <- filter(re_filter(), check == "t_w")
+        
+    }
+    
+    if (nrow(out_target) > 0) {
+    out_target <- out_target %>%
+        mutate(CAT0001.target = kingsmen_target_revenue,
+               CAT0002.target = lion_target_revenue,
+               CAT0003.target = thongnhat_target_revenue,
+               kingsmen_cover.target = kingsmen_cover,
+               lion_cover.target = lion_cover,
+               thongnhat_cover.target = thongnhat_cover) %>% 
+        select(-kingsmen_cover, -lion_cover, -thongnhat_cover)
+    } else {
+     out_target <- out_target %>%
+     mutate(CAT0001.target = character(),
+            CAT0002.target = character(),
+            CAT0003.target = character(),
+            kingsmen_cover.target = character(),
+            lion_cover.target = character(),
+            thongnhat_cover.target = character()) 
+    }
+    
+  if (is.null(out_target$CAT0001.target)) {
+  out_target_revenue$CAT0001.target <- NA
+  }
+  
+  if (is.null(out_target$CAT0002.target)) {
+  out_target_revenue$CAT0002.target <- NA
+  }
+   
+   if (is.null(out_target$CAT0003.target)) {
+  out_target_revenue$CAT0003.target <- NA
+   }
+    if (is.null(out_target$kingsmen_cover.target)) {
+  out_target_revenue$kingsmen_cover.target <- NA
+  }
+  
+  if (is.null(out_target$lion_cover.target)) {
+  out_target_revenue$lion_cover.target <- NA
+  }
+   
+   if (is.null(out_target$CAT0003.target)) {
+  out_target_revenue$thongnhat_cover.target <- NA
+  }
+    
+    
+    out <- full_join(out_final, out_target, by = "staff_id")
+    out
+})
+
+
+re_target <- reactive({
+    out <- re_final()
+    col_numer <- cols[cols %in% names(out)]
+    out[, col_numer] <- sapply(out[, col_numer], as.double)
+       
+    out <- out %>% 
+        group_by(staff_id) %>% 
+        summarise_at(col_numer, sum, na.rm = TRUE) %>%
+        ungroup()
+    
+#     target_coverstore = sum(target_coverstore, na.rm = TRUE),
+# 				  real_coverstore = sum(real_coverstore, na.rm = TRUE),
+# 				  Kingsmen_new = sum(Kingsmen_new, na.rm = TRUE),
+#                   Lion_new = sum(Lion_new, na.rm = TRUE),
+# 				  DTN_new = sum(DTN_new, na.rm = TRUE),
+# 				  Kingsmen_new.target = sum(Kingsmen_new.target, na.rm = TRUE),
+#                   Lion_new.target = sum(Lion_new.target, na.rm = TRUE),
+# 				  DTN_new.target = sum(DTN_new.target, na.rm = TRUE),
+# 				  CAT0001.revenue = sum(CAT0001.revenue, na.rm = TRUE),
+#                   CAT0001.target = sum(CAT0001.target, na.rm = TRUE),
+#                   CAT0002.revenue = sum(CAT0002.revenue, na.rm = TRUE),
+#                   CAT0002.target = sum(CAT0002.target, na.rm = TRUE),
+# 				  CAT0003.revenue = sum(CAT0003.revenue, na.rm = TRUE),
+#                   CAT0003.target = sum(CAT0003.target, na.rm = TRUE)
+  
+    out <- left_join(out, 
+                    msr_staff[, c("staff_id", "staff_lb",
+								 "supasm_lb", "suprsm_lb","supsd_lb", 
+								 "region_lb","staff_region","title")],
+					 by = "staff_id")
+    
+
+    #out <- out %>% 
+    #    group_by(staff_id, staff_lb, supsd_lb, suprsm_lb, supasm_lb) %>%
+    #    summarise_at(vars(target_coverstore, real_coverstore,
+    #     Kingsmen_new, Kingsmen_new.target, 
+    #     Lion_new, Lion_new.target,
+    #     CAT0001.revenue, CAT0001.target,
+    #     CAT0002.revenue, CAT0002.target), funs(sum(., na.rm = TRUE))) %>% 
+    #    ungroup()
+   
+     
+    
+    
+   
+    #out <- rename(out, target_qty = target, real_money = product_total_money, 
+    #              real_qty = product_qty, real_new = new_store, real_cover = real_coverstore)  
+    out_asm <- out %>%
+        group_by(supsd_lb, suprsm_lb, supasm_lb) %>%
+        summarise_at(col_numer, sum, na.rm = TRUE) %>%
+        mutate(supasm_lb = paste(supasm_lb, "Total", sep = " ")) %>%
+        bind_rows(out) %>%
+        arrange(supsd_lb, suprsm_lb, supasm_lb)
+    
+    out_rsm <- out %>%
+        group_by(supsd_lb, suprsm_lb) %>%
+        summarise_at(col_numer, sum, na.rm = TRUE) %>%
+        mutate(suprsm_lb = paste(suprsm_lb, "Total")) %>%
+        bind_rows(out_asm) %>%
+        arrange(supsd_lb, suprsm_lb) 
+    
+    out_sd <- out %>%
+        group_by(supsd_lb) %>%
+        summarise_at(col_numer, sum, na.rm = TRUE) %>%
+        mutate(supsd_lb = paste(supsd_lb, "Total")) %>%
+        bind_rows(out_rsm) %>%
+        arrange(supsd_lb) %>%
+        mutate_all(funs(replace(., is.na(.), ""))) %>%
+        mutate_at(vars(supsd_lb, suprsm_lb), funs(ifelse(grepl("Total", supasm_lb), "", .))) %>%
+        mutate(supsd_lb = ifelse(grepl("Total", suprsm_lb), "", supsd_lb)) 
+    
+    out <- out_sd
+
+    # out[,col] <- sapply((out[, col]), as.double)
+    # 
+    # out <- mutate(out,
+    #               per_money = round(real_money * 100 / target_money, 2),
+    #               per_new = round(real_new * 100 / target_new, 2),
+    #               per_cover = round(real_cover * 100 / target_cover, 2),
+    #               per_qty = round(real_qty * 100 / target_qty, 2))
+    
+    out <- out[!grepl("^ Total|^NA", out$supsd_lb),]
+    out <- out[!grepl("^ Total|^NA", out$suprsm_lb),]
+    out <- out[!grepl("^ Total|^NA", out$supasm_lb),]
+    
+    out[out == 0] <- NA
+    is.na(out) <- sapply(out, is.infinite)
+    is.na(out) <- sapply(out, is.nan)
+    
+    out <- out[, c("supsd_lb", "suprsm_lb", "supasm_lb", "region_lb","staff_id", "staff_lb", 
+                   "staff_region", "title", 
+                   cols)] #"per_new"
+    #out[, cols_1] <- sapply(out[, cols_1], number)
+  	out[, cols_1] <- sapply(out[, cols_1], as.double)
+    #out[] <- lapply(out[], function(x) gsub("NA", "", x))
+    names(out) <- encode(names(out), name_dict)
+    
+    out
+  
+})
+
+
+output$target_tbl <- DT::renderDataTable(
+{datatable(re_target(),
+class = "nowrap stripe hover cell-border",
+#container = sketch,
+rownames = FALSE,
+#filter = "top",
+options = list(scrollX = TRUE,
+			   scrollY = "750px",
+               ordering = TRUE,
+               pageLength = 20,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))) %>% 
+    formatCurrency(c("Bao phủ - Chỉ tiêu", "Bao phủ - Thực hiện", 
+                         "Mở mới Kingsmen - Thực hiện", "Mở mới Kingsmen - Chỉ tiêu",
+                         "Mở mới Lion - Thực hiện", "Mở mới Lion - Chỉ tiêu",
+                         "Mở mới DTN - Thực hiện", "Mở mới DTN - Chỉ tiêu",
+                         "Doanh số Kingsmen - Thực hiện", "Doanh số Kingsmen - Chỉ tiêu", 
+                         "Doanh số Lion - Thực hiện", "Doanh số Lion - Chỉ tiêu",
+                         "Doanh số DTN - Thực hiện", "Doanh số DTN - Chỉ tiêu"), currency = "")
+}
+)
+
+
+output$target_xls <- downloadHandler(
+    filename = paste0("211_[Kingsmen]BaoCaoChiSoBanHangSR_", format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        wb <- create_excel_file(#{
+            
+#            out <- re_target()
+#            cols <- c("Bao phủ - Chỉ tiêu", "Bao phủ - Thực hiện", 
+#                         "Mở mới Kingsmen - Thực hiện", "Mở mới Kingsmen - Chỉ tiêu",
+#                         "Mở mới Lion - Thực hiện", "Mở mới Lion - Chỉ tiêu",
+#                         "Doanh số Kingsmen - Thực hiện", "Doanh số Kingsmen - Chỉ tiêu", 
+#                         "Doanh số Lion - Thực hiện", "Doanh số Lion - Chỉ tiêu")
+#		  	out[, cols] <- sapply(out[, cols], as.double)
+#            out[, cols] <- sapply(out[, cols], number)
+#            #out[] <- lapply(out[], as.character)
+#            out[] <- lapply(out[], function(x) gsub("NA", "", x))
+#            out
+#        },
+          						re_target(),                    
+		  						sheet_name = "Chỉ số bán hàng",
+                                sheet_title = c("Chỉ số bán hàng"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+
+```
+
+Inputs {.sidebar}
+-------------------------------------
+
+```{r input-panel}
+
+radioButtons(
+            inputId = "shown_by_ip",
+            label = tags$strong("Chọn xem dữ liệu theo:"),
+            choices = c("Ngày" = "select_day",
+                        "Tuần" = "select_week",
+                        "Tháng" = "select_month"),
+  			selected = "select_month"
+        )
+
+
+tags$br()
+
+
+
+conditionalPanel(
+        condition = "input.shown_by_ip == 'select_day'",
+      dateRangeInput(
+                    inputId = "date_ip",
+                    label = "Chọn ngày:",
+                    min = min(input_dates),
+                    max = Sys.Date(),
+                    start = min(input_dates),
+					end = Sys.Date(),
+                    format = "dd-mm-yyyy",
+                    separator = "đến",
+                    language = "vi"
+        )
+      
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'|input.shown_by_ip =='select_week'",
+  #condition = "input.shown_by_ip == 'select_month'",
+  selectizeInput(
+                          inputId = "year_ip",
+                          label = tags$strong("Chọn năm:"),
+                          choices = input_years,
+                          selected = current_year()
+              )
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'|input.shown_by_ip =='select_week'",
+  #condition = "input.shown_by_ip == 'select_month'",
+  selectizeInput(
+                            inputId = "month_ip",
+                            label = tags$strong("Chọn tháng:"),
+                            choices = input_months,
+                            selected = current_month()
+                )
+)
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_week'",
+  selectizeInput(
+                          inputId = "week_ip",
+                          label = tags$strong("Chọn tuần:"),
+                          choices = input_weeks, 
+                          selected = "1"
+              )
+)
+ 
+tags$br()
+
+fluidRow(
+  column(
+    width = 12,
+    radioButtons(
+               inputId ="level_ip",
+               label = tags$strong("Chọn cấp bậc:"),
+               choices = input_levels, 
+               selected = "SR")
+  )
+)
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.level_ip =='SR'",
+      selectizeInput(
+                inputId ="SR_input",
+                label = tags$strong("Chọn SalesRep:"),
+                choice = input_SR)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='ASM'",
+      selectizeInput(
+                inputId ="ASM_input",
+                label = tags$strong("Chọn ASM:"),
+                choice = input_ASM)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='RSM'",
+      selectizeInput(
+                inputId ="RSM_input",
+                label = tags$strong("Chọn RSM:"),
+                choice = input_RSM)
+      )
+      
+    )
+  )
+
+
+if (exists("user_role")) {
+    if (user_role == "ADMIN") {
+        selectizeInput(
+            inputId = "SKU_ip",
+            label = tags$strong("Chọn SKU:"),
+            choices = input_SKU,
+            selected = "All",
+            multiple = TRUE
+        )
+    }
+}
+
+tags$br()
+
+fluidRow(
+    column(
+        width = 2,
+        downloadButton(outputId = "target_xls", label = "xlsx")
+          
+    )
+)
+
+```
+
+
+
+
+Column
+-------------------------------------
+
+### **Bảng tổng hợp**
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "target_tbl")
+    )
+)
+
+#output$note <- renderText("*Hiện tại chưa có dữ liệu cho chỉ tiêu Bao phủ NT và Mở mới NT")
+
+#renderUI ({
+#	 if(nrow(re_target()) > 0) {
+#		     textOutput(outputId = "note")
+#		    }
+#	  })
+
+
+```
+

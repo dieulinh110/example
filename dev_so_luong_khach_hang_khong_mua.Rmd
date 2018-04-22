@@ -1,0 +1,530 @@
+---
+title: "Báo cáo danh sách khách hàng không mua hàng"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        theme: flatly
+---
+
+<style>
+    body .main-container {
+        max-width: 90%;
+    }
+</style>
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_ymd <- function(x, which = "ymd", by = c("work_date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    #x[[by]] <- as.POSIXct(x[[by]])
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("d", which)) {
+        x$day <- lubridate::day(x[[by]])
+    }
+    x
+}
+
+```
+
+```{r import data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("readr", "tidyr", "dplyr", "shiny", "xlsx", "RTA")
+sapply(pkgs, require, character.only = TRUE)
+
+switch(
+    sys_user,
+    {library("DT")},
+    shiny = {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+## -----------------------------------------------------------------------------
+## import data
+
+switch(
+    sys_user,
+    {
+      data_dir <- "~/MEGAsync/RTA/KINGSMEN/data/"
+      try(msr_sales <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/MSR_SALES_DEMO.csv"), col_types= cols(.default = "c")))
+      try(msr_sales_rr <- read_csv(paste0(data_dir, "MSR_SALES_DEMO/sales_rr.csv"), col_types= cols(.default = "c")))
+      try(msr_remote <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/MSR_SALES_REMOTE_DEMO.csv"), col_types= cols(.default = "c")))
+      try(msr_remote_rr <- read_csv(paste0(data_dir, "MSR_SALES_REMOTE_DEMO/sales_rr.csv"), col_types= cols(.default = "c")))
+      try(msr_checkin <- read_csv(paste0(data_dir, "MSR_CHECKIN_DEMO/MSR_CHECKIN_DEMO.csv"), col_types= cols(.default = "c")))
+
+    }, 
+    shiny = {
+      try(msr_sales <- get_family_data("C011", "MSR_SALES_DEMO"))
+      try(msr_sales_rr <- get_family_data("C011", "MSR_SALES_DEMO", "sales_rr"))
+      try(msr_remote <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO"))
+      try(msr_remote_rr <- get_family_data("C011", "MSR_SALES_REMOTE_DEMO", "sales_rr"))
+      try(msr_checkin <- get_family_data("C011", "MSR_CHECKIN_DEMO"))
+      
+    }
+)
+
+try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+try(msr_product <- get_dm_data("C011", "MSR_product"))
+try(msr_store <- get_dm_data("C011", "MSR_store"))
+try(msr_storenew <- get_dm_data("C011", "MSR_newedit_store"))
+
+colname_out <- c("Ngày","Khu vực", "Địa bàn", "RSM", "ASM", "Mã NPP", "Tên NPP", "Mã SaleRep", "Tên SaleRep", "Mã NT", "Tên NT", "Tên người đại diện", "SĐT", "Số nhà", "Đường", "Phường/Xã", "Quận/Huyện", "Loại KH", "Ngày mở mới", "Trạng thái", "Ngày mua cuối cùng")
+```
+
+```{r cleaning data, include=FALSE}
+## Join raw data & repeat data
+msr_sales_rr <- left_join(msr_sales_rr, msr_sales, by = "instanceID")
+msr_sales_rr <- replace_with_na(msr_sales_rr)
+
+msr_remote_rr <- left_join(msr_remote_rr, msr_remote, by = "instanceID")
+msr_remote_rr <- replace_with_na(msr_remote_rr)
+
+msr_sales_remote_re <- bind_rows(msr_sales_rr, msr_remote_rr)
+msr_sales_remote <- bind_rows(msr_sales, msr_remote)
+
+##Remove test & rta
+filter_test <- function(data) {
+      out <- data
+      
+      if(!is.null(out$username)) {
+      #if("username" %in% names(out)) {
+        out <- filter(out, grepl("dgw", username))
+        #out <- filter(out, !grepl("dgw_vthieu", username))
+        #out <- filter(out, !grepl("dgw_vthieu|dgw_lnhduy", username))
+      } 
+      
+      if(!is.null(out$marked_as_deleted)) {
+      #if("marked_as_deleted" %in% names(out)) {
+        out <- filter(out, marked_as_deleted == 0)
+      } 
+      
+      
+      out
+}
+#msr_staff <- filter(msr_staff, grepl("dgw", username))
+#msr_staff <- filter(msr_staff, !grepl("dgw_vthieu|dgw_lnhduy", username))
+msr_staff <- filter_test(msr_staff)
+msr_product <- filter_test(msr_product)
+msr_store <- filter_test(msr_store)
+msr_storenew <- filter_test(msr_storenew)
+msr_checkin <- filter_test(msr_checkin)
+msr_sales_remote <- filter_test(msr_sales_remote)
+msr_sales_remote_re <- filter_test(msr_sales_remote_re)
+
+msr_store <- bind_rows(msr_store, msr_storenew) %>% 
+  rename(new_date = work_date)
+```
+
+```{r computing, include=FALSE}
+##Select data checkin
+checkin <- msr_checkin %>% 
+      select(work_date, store_id, staff_id)
+checkin$work_date <- as.Date(checkin$work_date, "%d/%m/%Y")
+
+##Select data sales
+sales_remote <- msr_sales_remote %>% 
+  select(work_date, store_id, staff_id, total_money_payment) #%>% unique()
+
+sales_remote_re <- msr_sales_remote_re %>% 
+  select(work_date, store_id, staff_id, product_id, product_qty) #%>% unique()
+
+sales_remote_re <- sales_remote_re %>% 
+  group_by(work_date, store_id, staff_id, product_id) %>% 
+  summarise(product_qty = sum(as.double(product_qty), na.rm = TRUE)) %>% 
+  filter(!is.na(product_id)) %>% 
+  spread(product_id, product_qty) %>% 
+  ungroup()
+
+sales_remote_re <- sales_remote_re %>% 
+  gather(product_id, product_qty, -work_date, -store_id, -staff_id) 
+
+sales_remote_re[is.na(sales_remote_re)] <- 0
+
+#sales_remote <- full_join(sales_remote, sales_remote_re, 
+#                          by = c("work_date", "store_id", "staff_id"))
+
+#sales_remote$work_date <- as.Date(sales_remote$work_date, "%d/%m/%Y")
+
+##Distinguish with checkin
+sales_remote <- sales_remote %>% 
+  mutate(check = ifelse(!total_money_payment %in% 0, 1, NA))
+sales_remote$work_date <- as.Date(sales_remote$work_date, "%d/%m/%Y")
+
+sales_remote_re <- sales_remote_re %>% 
+  mutate(check = ifelse(!product_qty %in% 0, 1, NA))
+sales_remote_re$work_date <- as.Date(sales_remote_re$work_date, "%d/%m/%Y")
+
+##Join checkin & sales
+sales_checkin <- full_join(checkin, sales_remote, 
+                          by = c("work_date", "store_id", "staff_id")) %>% unique()
+
+sales_checkin_re <- full_join(checkin, sales_remote_re, 
+                          by = c("work_date", "store_id", "staff_id")) %>% unique()
+```
+
+```{r, include=FALSE}
+sales_checkin <- mutate(sales_checkin, date2 = ifelse(is.na(check), NA, work_date))
+
+sales_checkin <- sales_checkin %>% 
+    group_by(store_id) %>% 
+    arrange(work_date) %>% 
+    fill(date2) %>% #default direction down
+    #fill(date2, .direction = "up") %>% 
+    mutate(last_date = ifelse(check %in% 1, NA, date2)) 
+
+sales_checkin$last_date <- as.Date(sales_checkin$last_date, origin = "1970-01-01")
+sales_checkin <- as.data.frame(sales_checkin)
+
+sales_checkin_re <- full_join(sales_checkin_re, 
+                              select(sales_checkin, work_date, staff_id, store_id, last_date), 
+                              by = c("work_date", "staff_id", "store_id"))
+
+not_buy_re <- filter(sales_checkin_re, is.na(check))
+not_buy <- filter(sales_checkin, is.na(check))
+not_buy$check <- 1
+
+not_buy <- bind_rows(not_buy, not_buy_re)
+```
+
+```{r preparing, include=FALSE}
+
+store <- select(msr_store, store_id, store_lb, 
+                store_hnumber, store_street, store_ward_lb, store_district_lb, 
+                store_owner_name, store_phone, 
+                store_type_id, store_status, region_lb, new_date)
+
+
+staff <- select(msr_staff, staff_id, staff_lb, 
+                supsd_id, supsd_lb, staff_region,
+                suprsm_id, suprsm_lb, 
+                supasm_id, supasm_lb, npp_id, npp_lb)
+
+not_buy <- left_join(not_buy, store, by = "store_id")
+not_buy <- left_join(not_buy, staff, by = "staff_id")
+not_buy <- gen_ymd(not_buy, which = "ymd")
+
+```
+
+```{r filter}
+## filtering data by user role
+
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "dieulinh") {
+  	user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+  	#user_name <- 'dgw_nttung2'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        not_buy <- filter(not_buy, staff_id == user_id)
+        msr_staff <- filter(msr_staff, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        not_buy <- filter(not_buy, supasm_id == user_id)
+        msr_staff <- filter(msr_staff, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        not_buy <- filter(not_buy, suprsm_id == user_id)
+        msr_staff <- filter(msr_staff, suprsm_id == user_id)
+    }
+
+}
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2017:current_year()
+input_months <- c(1:12)
+#input_months <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+
+input_dates <- c(unique(not_buy$work_date), Sys.Date())
+
+input_SKU <- distinct(select(msr_product, product_id, product_lb))
+input_SKU <- c("Tất cả" = "All", make_dict(input_SKU$product_lb, input_SKU$product_id))
+
+input_levels <- c("RSM", "ASM", "SR")
+
+input_RSM <- distinct(select(msr_staff, suprsm_id, suprsm_lb))
+input_RSM <- filter(input_RSM, suprsm_id != "", !is.na(suprsm_id))
+input_RSM <- c("Tất cả" = "All", make_dict(input_RSM$suprsm_lb, input_RSM$suprsm_id))
+
+input_ASM <- distinct(select(msr_staff, supasm_id, supasm_lb))
+input_ASM <- filter(input_ASM, supasm_id != "", !is.na(supasm_id))
+input_ASM <- c("Tất cả" = "All", make_dict(input_ASM$supasm_lb, input_ASM$supasm_id))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+
+```
+
+
+```{r server-processing, include=FALSE}
+
+re_filter <- reactive({
+  
+    dta <- not_buy
+
+    if (input$shown_by_ip == "select_month") {
+
+        out <- filter(dta, month %in% input$month_ip, year %in% input$year_ip)
+
+        validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu trong khoảng thời gian này."))
+             
+        
+
+    } else {
+
+        #date_range_ip1 <- as.Date(input$date_ip[1])
+        #date_range_ip2 <- as.Date(input$date_ip[2])
+       
+        validate(
+          need(input$date_ip[1] <= input$date_ip[2],
+               "Khoảng thời gian bắt đầu phải nhỏ hơn khoảng thời gian kết thúc")
+        )
+
+        out <- filter(dta, work_date >= input$date_ip[1] & work_date <= input$date_ip[2])
+        
+        
+    }
+    
+    if (input$SKU_input != "All") {
+    out <- filter(out, is.na(check))
+    out <- filter(out, product_id %in% input$SKU_input)
+    } else {
+    out <- filter(out, !is.na(check))  
+	  }
+
+    if (input$level_ip == "RSM") {
+	  out <- out
+	  if (input$RSM_input != "All") {  
+        out <- filter(out, suprsm_id %in% input$RSM_input)
+		}
+    }
+
+    if (input$level_ip == "ASM") {
+	  out <- out
+	  if (input$ASM_input != "All") {  
+        out <- filter(out, supasm_id %in% input$ASM_input)
+		}
+    }
+
+    if (input$level_ip == "SR") {
+	  out <- out
+	  if (input$SR_input != "All") {  
+        out <- filter(out, staff_id %in% input$SR_input)
+		}
+    }
+    validate(
+            need(nrow(out) > 0,
+                 "Không có dữ liệu trong khoảng thời gian này.")
+        )
+   out <- out[, c("work_date","region_lb", 
+                  "staff_region", "suprsm_lb", "supasm_lb", "npp_id", "npp_lb",
+                  "staff_id", "staff_lb", "store_id", "store_lb", 
+                  "store_owner_name", "store_phone", 
+                  "store_hnumber", "store_street", "store_ward_lb", "store_district_lb", 
+                  "store_type_id", "new_date", "store_status", "last_date")]
+   names(out) <- colname_out 
+   out
+})
+
+
+   
+output$list_tbl <- DT::renderDataTable(
+{re_filter()},
+class = "nowrap stripe hover cell-border",
+rownames = FALSE,
+#filter = "top",
+options = list(scrollX = TRUE,
+               ordering = TRUE,
+               pageLength = 20,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+
+output$list_xls <- downloadHandler(
+    filename = paste0("236_[Kingsmen]_Danh-sach-kh-khong-mua-hang_", 
+                      format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        wb <- create_excel_file(re_filter(),
+                                sheet_name = "Danh sách",
+                                sheet_title = c("Danh sách không mua hàng"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+```
+
+Inputs {.sidebar}
+----------------------------------------------
+
+```{r input-panel}
+
+radioButtons(
+            inputId = "shown_by_ip",
+            label = tags$strong("Chọn xem dữ liệu theo:"),
+            choices = c("Ngày" = "select_day",
+                        "Tháng" = "select_month"),
+  			selected = "select_month"
+        )
+
+
+tags$br()
+
+
+conditionalPanel(
+        condition = "input.shown_by_ip == 'select_day'",
+      dateRangeInput(
+                    inputId = "date_ip",
+                    label = "Chọn ngày:",
+                    min = min(input_dates),
+                    max = Sys.Date(),
+                    start = min(input_dates),
+                    end = Sys.Date(),
+                    format = "dd-mm-yyyy",
+                    separator = "đến",
+                    language = "vi"
+        )
+      
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+                          inputId = "year_ip",
+                          label = tags$strong("Chọn năm:"),
+                          choices = input_years,
+                          selected = current_year()
+              )
+)
+
+
+conditionalPanel(
+  condition = "input.shown_by_ip == 'select_month'",
+  selectInput(
+                            inputId = "month_ip",
+                            label = tags$strong("Chọn tháng:"),
+                            choices = input_months,
+                            selected = current_month()
+                )
+)
+
+tags$br()
+
+fluidRow(
+  column(
+    width = 12,
+      selectInput(
+                inputId ="SKU_input",
+                label = HTML("<span><b>Chọn SKU:</b><br /><small>
+						(Chọn Tất cả là NT không phát sinh đơn hàng)</small></span>"),
+                choice = input_SKU)
+      )
+)
+
+
+tags$br()
+
+fluidRow(
+  column(
+    width = 12,
+    radioButtons(
+               inputId ="level_ip",
+               label = tags$strong("Chọn cấp bậc:"),
+               choices = input_levels, 
+               selected = "SR")
+  )
+)
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.level_ip =='SR'",
+      selectInput(
+                inputId ="SR_input",
+                label ="Chọn SalesRep: ",
+                choice = input_SR)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='ASM'",
+      selectInput(
+                inputId ="ASM_input",
+                label ="Chọn ASM: ",
+                choice = input_ASM)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='RSM'",
+      selectInput(
+                inputId ="RSM_input",
+                label ="Chọn RSM: ",
+                choice = input_RSM)
+      )
+      
+    )
+  )
+
+tags$br()
+
+fluidRow(
+    column(
+        width = 2,
+        downloadButton(outputId = "list_xls", label = "xlsx")
+          
+    )
+)
+```
+
+Column
+----------------------------------------------
+
+### Bảng tổng hợp
+
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "list_tbl")
+    )
+)
+
+```
+

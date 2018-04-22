@@ -1,0 +1,396 @@
+---
+title: "Xuất mẫu MCP"
+author: "Real-Time Analytics"
+date: "`r Sys.time()`"
+runtime: shiny
+output:
+    html_document:
+        theme: flatly
+
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999)
+sys_user <- Sys.info()["user"]
+
+```
+
+
+```{r function, include=FALSE}
+  
+col_en <- c("dgw_store_id_new", "store_lb_new", "store_hnumber_new", "store_street_new", 
+             "store_ward_lb_new", "store_district_lb_new", "city_lb_new", "store_type_id_new", 
+             "asm_lb_new", "region_lb_new", "npp_lb_new", "salerep_id_new", "salerep_lb_new", 
+             "staff_region_new", "visitday_id_mon", "visitday_id_tue", "visitday_id_wed",
+             "visitday_id_thu", "visitday_id_fri", "visitday_id_sat", "store_status_new", 
+             "store_frequency", "company_lb_new", "tax_id_new", "bill_add_new", "store_owner_name_new",
+             "store_owner_gender_new", "store_owner_dob_new", "store_phone_new", "account_number_new",
+             "bank_owner_name_new", "bank_lb_new", "branch_bank_lb_new", "username_new", "city_id_new",
+             "region_id_new", "store_id_new")
+
+col_vi <- c("Mã KH", "Tên KH", "Số Nhà", "Đường", 
+             "Phường/Xã", "Quận/Huyện", "Tỉnh/Thành Phố", "Loại KH", 
+             "ASM", "Khu vực", "Tên NPP", "Mã NVBH ( Sales Rep )", "Tên NVBH Sales Rep",
+             "Địa Bàn", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Trạng Thái KH", 
+             "Tần suất", "Tên đơn vị", "Mã số thuế", "Địa chỉ hóa đơn", "Họ & Tên",
+             "Giới tính", "Ngày tháng năm sinh", "Số ĐT", "Số TK ngân hàng", 
+             "Tên chủ TK", "Ngân hàng", "Chi nhánh NH", "rtWork Account", "Mã Tỉnh/Thành Phố",
+             "Mã Khu vực", "Mã KH RTA")
+
+
+### SET COLNAMES
+set_colnames <- function(dtf) {
+   col_names <- setNames(col_vi, col_en)
+   dtf <- select(dtf, one_of(col_en))
+   names(dtf) <- encode(names(dtf), col_names)
+   return(dtf)
+ }
+
+gen_select_multiple <- function(data, col, vals) {
+    if (any(grepl("\\s", data[[col]]))) {
+        data[["temp"]] <- strsplit(data[[col]], " ")
+    } else {
+        data[["temp"]] <- data[[col]]
+    }
+    data[["temp"]] <- lapply(data[["temp"]], function(x) as.double(vals %in% x))
+    for (i in seq_along(vals)) {
+        data[[paste("visitday_id", i, sep = "_")]] <- sapply(data[["temp"]], "[", i)
+    }
+    data[["temp"]] <- NULL
+    data
+}
+
+```
+
+
+```{r packages, include = FALSE}
+
+
+RTA::load_packages(RTA, dplyr, xlsx)
+
+switch(
+    sys_user,
+    dieulinh = {library("DT")},
+    {
+      library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")
+    }
+)
+
+```
+
+```{r import-data, include=FALSE}
+## -----------------------------------------------------------------------------
+## import data
+#msr_store <- data.table::fread("http://dgw.rtcpms.com/api/download/datamodel?token=your_token_here&dm_name=MSR_store&max_order=0&format=csv")
+#msr_staff <- data.table::fread("http://dgw.rtcpms.com/api/download/datamodel?token=your_token_here&dm_name=MSR_staff&max_order=0&format=csv")
+#province <-	data.table::fread("http://dgw.rtcpms.com/api/download/datamodel?token=your_token_here&dm_name=km_vnadmin3&max_order=0&format=csv")						 
+try(msr_store <- get_dm_data("http://dgw.rtcpms.com", "MSR_store"))
+try(msr_staff <- get_dm_data("http://dgw.rtcpms.com", "MSR_staff"))
+try(province <- get_dm_data("http://dgw.rtcpms.com", "km_vnadmin3"))
+
+```
+
+```{r clean-data, include=FALSE}
+
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+
+msr_store <- left_join(msr_store, 
+                       select(msr_staff, username, staff_region, staff_id, supasm_id, suprsm_id, supsd_id), 
+                       by = c("salerep_id" = "staff_id"))
+
+
+colnames(msr_store) <- paste0(colnames(msr_store), "_new")
+
+col <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+msr_store <- gen_select_multiple(msr_store, col = "visitday_id_new", vals = col)
+
+msr_store$visitday_id_mon <- case_when(msr_store$visitday_id_1 == 1 ~ "x", msr_store$visitday_id_1 == 0 ~ "")
+msr_store$visitday_id_tue <- case_when(msr_store$visitday_id_2 == 1 ~ "x", msr_store$visitday_id_2 == 0 ~ "")
+msr_store$visitday_id_wed <- case_when(msr_store$visitday_id_3 == 1 ~ "x", msr_store$visitday_id_3 == 0 ~ "")
+msr_store$visitday_id_thu <- case_when(msr_store$visitday_id_4 == 1 ~ "x", msr_store$visitday_id_4 == 0 ~ "")
+msr_store$visitday_id_fri <- case_when(msr_store$visitday_id_5 == 1 ~ "x", msr_store$visitday_id_5 == 0 ~ "")
+msr_store$visitday_id_sat <- case_when(msr_store$visitday_id_6 == 1 ~ "x", msr_store$visitday_id_6 == 0 ~ "")
+
+msr_store <- mutate(msr_store, store_frequency = apply(msr_store, 1, 
+                                         function(x) sum(stringr::str_count(x[["visitday_id_new"]], " "), 
+                                                         1, na.rm = TRUE)))
+
+not_col <- col_en[!col_en %in% names(msr_store)]
+msr_store[, not_col] <- NA
+
+
+msr_store[is.na(msr_store)] <- ""
+
+## filtering data by user role
+msr_staff <- filter(msr_staff, !staff_status %in% "Inactive")
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "dieulinh") {
+  	user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+  	#user_name <- 'dgw_pblinh'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        msr_store <- filter(msr_store, salerep_id_new == user_id)
+        msr_staff <- filter(msr_staff, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        msr_store <- filter(msr_store, supasm_id_new == user_id)
+        msr_staff <- filter(msr_staff, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        msr_store <- filter(msr_store, suprsm_id_new == user_id)
+        msr_staff <- filter(msr_staff, suprsm_id == user_id)
+    }
+}
+
+### Select input
+
+province <- left_join(distinct(select(msr_store, city_id_new, region_id_new, region_lb_new)),
+                      distinct(select(province, tinh_id, tinh_name)), 
+                      by = c("city_id_new" = "tinh_id"))
+
+input_region <- distinct(select(province, region_id_new, region_lb_new))
+input_region <- filter(input_region, region_id_new != "", !is.na(region_id_new))
+input_region <- c("Tất cả" = "All", make_dict(input_region$region_lb_new, input_region$region_id_new))
+
+
+input_city <- distinct(select(province, city_id_new, tinh_name))
+input_city <- filter(input_city, city_id_new != "", !is.na(city_id_new))
+input_city <- distinct(select(input_city, city_id_new, tinh_name))
+input_city <- c("Tất cả" = "All", make_dict(input_city$tinh_name, input_city$city_id_new))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+
+input_status <- c("Tất cả" = "All", "ON", "OFF")
+
+msr_store <- msr_store[, col_en]
+```
+
+```{r reactive, include=FALSE}
+
+## Filter
+re_filter <- reactive({
+    out <- msr_store
+    
+    if (input$region_ip != "All") {
+       out <- out %>% 
+        filter(region_id_new %in% input$region_ip) 
+    }
+    
+    if (input$city_ip != "All") {
+       out <- out %>% 
+        filter(city_id_new %in% input$city_ip) 
+    }
+    
+    if (input$staff_ip != "All") {
+       out <- out %>% 
+        filter(salerep_id_new %in% input$staff_ip) 
+    }
+    
+    if (input$status_ip != "All") {
+       out <- out %>% 
+        filter(store_status_new %in% input$status_ip) 
+    }
+    
+    #shiny::validate(need({nrow(out) > 0}, "Không có dữ liệu."))
+    
+    #names_dict <- make_dict(col_vi, col_en)
+    #names(out) <- encode(names(out), name_dict)
+    out
+})
+
+re_name <- reactive({
+    out <- re_filter()
+    #names_dict <- make_dict(col_en, col_vi)
+    #names(out) <- encode(names(out), name_dict)
+    #names(out) <- col_vi
+    out <- set_colnames(out)
+    out
+})
+    
+output$table <- renderDataTable(
+  {re_name()},
+  rownames = F,
+  options = list(scrollX = TRUE,
+                 ordering = TRUE,
+                 autoWidth = TRUE,
+				 pageLength = 20, 
+				 language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+
+time <- Sys.time() %>% format("%d-%m-%Y_%Hh%Mp")
+
+output$downloadXLSX <- downloadHandler(
+  filename = function() {
+    paste0('Template_MCP_', time, '.xlsx')
+  },
+  content = function(file) {
+    df2 <- re_filter()
+    df2[] <- lapply(df2, as.character)
+    
+    df1 <- data.frame(asm_lb_new = "THÔNG TIN QUẢN LÝ",
+                      visitday_id_mon = "TẦN SUẤT & LỊCH TRÌNH VIẾNG THĂM",
+                      company_lb_new = "THÔNG TIN XUẤT HÓA ĐƠN",
+                      store_owner_name_new = "THÔNG TIN NGƯỜI LIÊN HỆ",
+                      account_numbrbindew = "Tài Khoản Ngân Hàng Của Chủ Store",
+                      stringsAsFactors = FALSE)
+
+    df <- df2[0, colnames(df2)]
+    df[1, ] <- col_vi 
+
+    out <- bind_rows(df1, df, df2)
+    out <- out[, col_en]
+    
+        ## creation of the workbook
+        wb <- createWorkbook(type = "xlsx")
+
+        ## define style for workbook
+        title_style <- CellStyle(wb) +
+            Font(wb, heightInPoints = 14, color = "forestgreen", isBold = TRUE, underline = 0)
+
+        subtitle_style <- CellStyle(wb) +
+            Font(wb, heightInPoints = 12, isItalic = TRUE, isBold = FALSE)
+
+        table_rownames_style <- CellStyle(wb) +
+            Font(wb, isBold = FALSE)
+
+        table_colnames_style <- CellStyle(wb) +
+            Font(wb, isBold = TRUE) +
+            Alignment(wrapText = TRUE, horizontal = "ALIGN_LEFT") +
+            Border(color = "black", position = c("TOP", "BOTTOM"), pen = c("BORDER_THIN", "BORDER_THIN"))
+
+        table_content_style <- CellStyle(wb,
+                                         alignment = Alignment(wrapText = TRUE,
+                                                               horizontal = "ALIGN_CENTER"))
+
+
+        ## Add sheet content function
+        add_df_to_sheet <- function(df_table, sheet_object){
+            addDataFrame(
+                df_table,
+                sheet_object,
+                startRow = 1,
+                startColumn = 1,
+                colnamesStyle = table_colnames_style,
+                rownamesStyle = table_rownames_style,
+                colStyle = table_content_style,
+                row.names = FALSE)
+        }
+
+        xlsx_add_title <- function(sheet, row_index, title, title_style) {
+            rows <- createRow(sheet, rowIndex = row_index)
+            sheet_title <- createCell(rows, colIndex = 1)
+            setCellValue(sheet_title[[1, 1]], title)
+            setCellStyle(sheet_title[[1, 1]], title_style)
+
+        }
+
+        ## Create new sheet and add contents
+        sheet1 <- createSheet(wb, sheetName = "Sheet1")
+
+
+        #xlsx_add_title(sheet1, row_index = 2, title = "Sheet1", title_style = title_style)
+       
+
+        add_df_to_sheet(out, sheet1)
+
+        setColumnWidth(sheet1, colIndex = c(1:ncol(out)), colWidth = 20)
+        
+        addMergedRegion(sheet1, 2,2,9,14)
+        addMergedRegion(sheet1, 2,2,15,22)
+        addMergedRegion(sheet1, 2,2,23,25)
+        addMergedRegion(sheet1, 2,2,26,33)
+        
+        addAutoFilter(sheet1, "A3:AK3")
+
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+
+    #writexl::write_xlsx(out, file)
+    
+  }
+)
+```
+
+```{r input-select}
+
+fluidRow(
+  column(
+    width = 4, 
+        selectizeInput(
+          inputId = "region_ip",
+          label = "Chọn khu vực:",
+          choices = input_region#,
+          #selected = "All"
+        )
+  ),
+  column(
+    width = 4,
+        selectizeInput(
+          inputId = "city_ip",
+          label = "Chọn thành phố",
+          choices = input_city#,
+         # selected = "All"
+        )
+    )
+)
+
+
+
+fluidRow(
+  column(
+    width = 4,
+      selectizeInput(
+        inputId = "staff_ip",
+        label = "Chọn nhân viên:",
+        choices = input_SR#,
+       # selected = "All"
+        )
+  ),
+  
+  column(
+    width = 4,
+      selectizeInput(
+      inputId = "status_ip",
+      label = "Trạng thái nhà thuốc:",
+      choices = input_status#,
+      #selected = "All"
+      
+        )
+    )
+)
+													   
+
+  fluidRow(
+  column(
+    width = 4,
+        downloadButton('downloadXLSX', 'xlsx')
+    )
+)
+tags$br()
+													   
+```
+													   
+```{r output}
+    
+fluidRow(
+  column(
+    width = 12,
+    dataTableOutput("table")
+  )
+)
+
+```

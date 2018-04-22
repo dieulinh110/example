@@ -1,0 +1,275 @@
+---
+title: "Báo cáo chỉ tiêu của Salesrep"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        theme: flatly
+---
+
+<style>
+    body .main-container {
+        max-width: 90%;
+    }
+</style>
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+db_download <- function(site, family_id, table = family_id) {
+  # helper function
+  is_url <- function(x) grepl("^(http|ftp)s?://", x)
+  if (!is_url(site)) {
+    site <- RTA::get_project_url(site)
+  }
+  
+  url <- paste0(site, "/tmp/family/", family_id, "/official/", family_id, ".db")
+  filename <- paste0(table, ".db")
+  
+  downloader::download(url, filename)
+  
+  db_conn <- DBI::dbConnect(RSQLite::SQLite(), filename)
+  on.exit(DBI::dbDisconnect(db_conn))
+  out <- DBI::dbReadTable(db_conn, table)
+  out
+}
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("readr", "tidyr", "plyr", "dplyr", "shiny", "xlsx", "RTA")
+sapply(pkgs, require, character.only = TRUE)
+
+switch(
+    sys_user,
+    hieu = {library("DT")},
+    {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+## -----------------------------------------------------------------------------
+## import data
+
+switch(
+    sys_user,
+    hieu = {
+      asm_target_sr <- db_download("C011", "ASM_TARGET_SALEREP_TEST")
+      asm_rr <- db_download("C011", "ASM_TARGET_SALEREP_TEST", "asm_rr")
+      asm_rrr <- db_download("C011", "ASM_TARGET_SALEREP_TEST", "asm_rrr")
+
+    }, {
+      asm_target_sr <- get_family_data("C011", "ASM_TARGET_SALEREP_TEST")
+      asm_rr <- get_family_data("C011", "ASM_TARGET_SALEREP_TEST", "asm_rr")
+      asm_rrr <- get_family_data("C011", "ASM_TARGET_SALEREP_TEST", "asm_rrr")
+      
+    }
+)
+
+asm_target <- get_dm_data("CPMS0006", "ASM_target")
+msr_staff <- get_dm_data("C011", "MSR_staff")
+msr_product <- get_dm_data("C011", "MSR_product")
+
+```
+
+
+```{r prepare-data, include=FALSE}
+
+asm_target_sr <- replace_with_na(asm_target_sr)
+asm_rr <- replace_with_na(asm_rr)
+asm_rrr <- replace_with_na(asm_rrr)
+
+### remove rta
+msr_staff[] <- lapply(msr_staff, as.character)
+msr_staff <- msr_staff[grepl("^DGW", msr_staff$staff_id),]
+asm_target[] <- lapply(asm_target, as.character)
+
+```
+
+
+
+```{r compute-revenue, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## raw data target
+
+asm_rr <- full_join(asm_rr, asm_rrr, by = c("_URI" = "_PARENT_AURI", 
+                                            "instanceID" = "instanceID"))
+asm_rr <- full_join(asm_target_sr, asm_rr, by = c("_URI" = "_PARENT_AURI", 
+                                               "instanceID" = "instanceID"))
+
+
+## remove rta
+asm_rr <- asm_rr[grepl("^DGW", asm_rr$staff_id),]
+
+asm_rr <- left_join(asm_rr, 
+                    asm_target[, c("target_id", "month", "product_id")],
+                    by = c("target_month" = "target_id",
+                           "product_id"))
+asm_rr <- left_join(asm_rr,
+                    msr_product[, c("product_id", "product_price")],
+                    by = c("product_id"))
+
+asm_rr <- asm_rr %>% group_by(month, username) %>% mutate(latest = submission_date == max(submission_date, na.rm = TRUE)) %>% ungroup()
+asm_rr <- filter(asm_rr, latest == TRUE)
+asm_rr$latest <- NULL
+
+asm_rr[c("product_price", "turnover")] <- sapply((asm_rr[c("product_price", "turnover")]), as.double)
+
+asm_rr$product_money <- asm_rr$product_price * asm_rr$turnover
+asm_rr <- asm_rr[, c("month", "staff_id", "product_id", "product_money")]
+
+asm_rr <- asm_rr %>% spread(product_id, product_money)
+asm_rr$TongSo <- sum(asm_rr$KM8936136010014, asm_rr$KM8936136010021, na.rm = T)
+
+
+asm_rr <- left_join(asm_rr, 
+                   msr_staff[, c("staff_id", "staff_lb", "staff_add", "supasm_id", "supasm_lb", 
+                                 "suprsm_id", "suprsm_lb", "supsd_id", "supsd_lb",
+                                 "region_id", "region_lb")], by = c("staff_id"))
+
+
+## filtering data by user role
+
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+
+if (sys_user != "hieu") {
+    user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+
+    if (user_role == "SR") {
+        asm_rr <- filter(asm_rr, staff_id == user_id)
+    }
+
+    if (user_role == "ASM") {
+        asm_rr <- filter(asm_rr, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        asm_rr <- filter(asm_rr, suprsm_id == user_id)
+    }
+
+    if (user_role == "SD") {
+        asm_rr <- filter(asm_rr, supsd_id == user_id)
+    }
+}
+
+## -----------------------------------------------------------------------------
+## inputs to input-panels
+
+input_years <- 2017:(current_year()+1)
+input_months <- c("01", "02", "03", "04", "05", "06",
+                  "07", "08", "09", "10", "11", "12")
+
+```
+
+
+```{r server-processing, include=FALSE}
+
+re_target <- reactive({
+  month_ip <- paste0(input$month_ip, "/", input$year_ip)
+  out <- filter(asm_rr, month %in% month_ip)
+  out <- select(out, supsd_lb, suprsm_lb, supasm_lb, region_lb, staff_id, 
+                staff_lb, staff_add, KM8936136010014, KM8936136010021, TongSo)
+  names(out) <- c("SD", "RSM", "ASM", "KV", "ID nhân viên",
+                  "Tên Sales rep", "Địa bàn", "Doanh số Hộp 28 viên", "Doanh số Vỉ 7 viên", "Tổng doanh số")
+  out
+})
+
+
+output$target_tbl <- DT::renderDataTable(
+{re_target()},
+class = "nowrap stripe hover cell-border",
+rownames = FALSE,
+options = list(scrollX = TRUE,
+               ordering = FALSE,
+               pageLength = 20,
+               language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))
+)
+
+output$target_xls <- downloadHandler(
+    filename = paste0("TARGET_SALESREP_", format(Sys.time(), "%d%m%Y_%H%M%S"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        wb <- create_excel_file(re_target(),
+                                sheet_name = "target",
+                                sheet_title = c("Target"))
+        ## save workbook to a file
+        saveWorkbook(wb, file)
+    }
+)
+
+```
+
+Inputs {.sidebar}
+-------------------------------------
+
+```{r input-panel}
+
+fluidRow(
+    column(
+        width = 12,
+        selectInput(
+          inputId = "year_ip",
+          label = "Chọn năm",
+          choices = input_years,
+          selected = current_year())
+    )
+)
+
+
+fluidRow(
+    column(
+        width = 12,
+        selectInput('month_ip',
+                    'Chọn tháng',
+                    input_months,
+                    selected = current_month(as_char = TRUE))
+    )
+)
+
+tags$br()
+
+tags$br()
+```
+
+
+
+
+Column
+-------------------------------------
+
+### **Bảng tổng hợp**
+```{r}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "target_tbl")
+    )
+)
+
+fluidRow(
+    column(
+        width = 2,
+        downloadButton(outputId = 'target_xls', label = 'xlsx')
+    )
+)
+
+```

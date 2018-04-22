@@ -1,0 +1,662 @@
+---
+title: "Báo cáo công nợ khách hàng của NPP"
+author: "Real - time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M:%S')`"
+runtime: shiny
+output:
+    flexdashboard::flex_dashboard:
+        orientation: rows
+        theme: flatly
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+Sys.setlocale(category='LC_ALL','en_US.UTF-8')
+options(shiny.sanitize.errors = FALSE, scipen = 999) # large numbers should be in full display
+sys_user <- Sys.info()["user"]
+
+```
+
+
+```{r helper-functions, include=FALSE}
+
+table <- function(..., useNA = 'ifany') base::table(..., useNA = useNA)
+
+gen_ymd <- function(x, which = "ymd", by = c("work_date")) {
+    by <- match.arg(by)
+    if (!any(names(x) == by)) {
+        stop(sprintf("column '%s' can not be found", by), call. = FALSE)
+    }
+    
+    x[[by]] <- lubridate::dmy(x[[by]])
+
+    if (grepl("y", which)) {
+        x$year <- lubridate::year(x[[by]])
+    }
+
+    if (grepl("m", which)) {
+        x$month <- lubridate::month(x[[by]])
+    }
+
+    if (grepl("d", which)) {
+        x$date <- lubridate::date(x[[by]])
+    }
+    x
+}
+
+number <- function(x) {format(x, big.mark = ",")}  
+
+```
+
+
+```{r packages, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## load packages
+
+pkgs <- c("tidyr", "dplyr", "shiny", "xlsx", "RTA", "readr", "writexl")
+sapply(pkgs, require, character.only = TRUE)
+
+
+switch(
+    sys_user,
+    {library("DT")},
+    shiny = {library("DT", lib.loc = "/home/haoly/R/library/DT-1.0.0")}
+)
+
+```
+
+
+```{r import-data, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## import data
+
+
+switch(
+    sys_user,
+    {
+      data_dir <- "~/MEGAsync/RTA/KINGSMEN/data/"
+    
+      try(balance_vera <- read_csv(paste0(data_dir, "NPP_BALANCE_VERA/NPP_BALANCE_VERA.csv"), col_types = cols(.default = "c")))
+      try(balance_vera_rr <- read_csv(paste0(data_dir, "NPP_BALANCE_VERA/npp_rr.csv"), col_types = cols(.default = "c")))
+      try(balance_verb <- read_csv(paste0(data_dir, "NPP_BALANCE_VERB/NPP_BALANCE_VERB.csv"), col_types = cols(.default = "c")))
+      #try(balance_verb_rr <- read_csv(paste0(data_dir, "NPP_BALANCE_VERB/npp_rr.csv"), col_types = cols(.default = "c")))
+      try(msr_store <- get_dm_data("C011", "MSR_store"))
+      try(msr_storeedit <- get_dm_data("C011", "MSR_newedit_store"))
+      try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+      try(msr_product <- get_dm_data("C011", "MSR_product"))
+      
+    }, 
+    shiny = {
+      try(balance_vera <- get_family_data("C011", "NPP_BALANCE_VERA"))
+      try(balance_vera_rr <- get_family_data("C011", "NPP_BALANCE_VERA", "npp_rr"))
+      try(balance_verb <- get_family_data("C011", "NPP_BALANCE_VERB"))
+      #try(balance_verb_rr <- get_family_data("C011", "NPP_BALANCE_VERB", "npp_rr"))
+      try(msr_store <- get_dm_data("C011", "MSR_store"))
+      try(msr_storeedit <- get_dm_data("C011", "MSR_newedit_store"))
+      try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+      try(msr_product <- get_dm_data("C011", "MSR_product"))
+    },
+    dm = {
+      try(balance_vera <- get_dm_data("C011", "NPP_balanced_vera"))
+      try(balance_verb <- get_dm_data("C011", "NPP_balanced_verb"))
+      try(msr_store <- get_dm_data("C011", "MSR_store"))
+      try(msr_storeedit <- get_dm_data("C011", "MSR_newedit_store"))
+      try(msr_staff <- get_dm_data("C011", "MSR_staff"))
+      try(msr_product <- get_dm_data("C011", "MSR_product"))
+    }
+)    
+      
+```
+
+```{r prepared-data}
+## Join data
+balance_vera_re <- left_join(balance_vera_rr, balance_vera, by = "instanceID")
+balance_vera_re <- replace_with_na(balance_vera_re)
+
+msr_store <- filter(msr_store, marked_as_deleted == 0) %>% 
+  rename(staff_id = salerep_id, staff_lb = salerep_lb)
+msr_storeedit <- filter(msr_storeedit, marked_as_deleted == 0) %>% 
+  rename(staff_lb = fullname)
+
+store <- bind_rows(msr_store, msr_storeedit)
+
+msr_staff <- filter(msr_staff, marked_as_deleted == 0)
+
+## Remove rta + test
+msr_staff <- filter(msr_staff, username != "dgw_vthieu")
+msr_staff <- filter(msr_staff, grepl("^dgw", username))
+
+balance_vera_re <- filter(balance_vera_re, username != "dgw_vthieu")
+#balance_vera_re <- filter(balance_vera_re, grepl("^dgw", username))
+
+balance_verb <- filter(balance_verb, username != "dgw_vthieu")
+#balance_verb <- filter(balance_verb, grepl("^dgw", username))
+
+```
+
+```{r calculating}
+## Join data with MSR_product
+balance_vera_re <- left_join(balance_vera_re, msr_product, by = c("product_id", "product_lb"))
+balance_vera_re <- left_join(balance_vera_re, unique(msr_staff[, c("npp_id", "npp_lb")]), by = "npp_id")
+balance_verb <- left_join(balance_verb, unique(msr_staff[, c("npp_id", "npp_lb")]), by = "npp_id")
+
+# Change type date
+balance_vera_re <- gen_ymd(balance_vera_re)
+#balance_vera_re$month <- format(balance_vera_re$work_date, "%m/%Y")
+
+balance_verb <- gen_ymd(balance_verb)
+#balance_verb$month <- format(balance_verb$work_date, "%m/%Y")
+
+staff <- select(msr_staff, staff_id, staff_lb, supasm_id, supasm_lb,
+                                    suprsm_id, suprsm_lb, supsd_id, supsd_lb, region_id, staff_region,
+                                    region_lb)
+
+## Balance by SKU
+balance_vera_re <- balance_vera_re %>% 
+  select(year, month, work_date, balance_id, 
+         npp_id, npp_lb,
+         store_id, store_lb, 
+         categ_lb, brand_lb, product_id, product_lb, 
+         received, return, inventory,
+         money, discount, paymented, balance_now, work_date_last)
+
+balance_vera_re <- left_join(balance_vera_re, staff, by = c("npp_id" = "staff_id"))
+
+balance_vera_re2 <- balance_vera_re %>% 
+  select(year, month, balance_id, 
+         npp_id, npp_lb,
+         store_id, store_lb, 
+         categ_lb, brand_lb, product_id, product_lb)
+
+balance_vera_re2 <- left_join(balance_vera_re2, staff, by = c("npp_id" = "staff_id"))
+
+## Balance by order
+balance_verb <- balance_verb %>% 
+  select(year, month, work_date, balance_id, 
+         npp_id, npp_lb, 
+         store_id, store_lb,
+         orderall_balanced, store_orderall,
+         money, discount, paymented, balance_now, work_date_last)
+
+balance_verb <- left_join(balance_verb, staff, by = c("npp_id" = "staff_id"))
+
+balance_verb2 <- balance_verb %>% 
+  select(year, month, balance_id, 
+         npp_id, npp_lb, 
+         store_id, store_lb,
+         orderall_balanced, store_orderall)
+
+balance_verb2 <- left_join(balance_verb2, staff, by = c("npp_id" = "staff_id"))
+
+## filtering data by user role
+
+role_mapping <- make_dict(msr_staff$username, msr_staff$user_role)
+staff_dict <- make_dict(msr_staff$username, msr_staff$staff_id)
+npp_dict <- make_dict(msr_staff$username, msr_staff$npp_id)
+
+
+if (sys_user == "dieulinh") {
+    
+    user_name <- '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+  	user_name <- "dgw_lnhduy"
+    user_role <- encode(user_name, role_mapping)
+    user_id <- encode(user_name, staff_dict)
+    user_npp <- encode(user_name, npp_dict)
+  
+   # if (user_role == "SR") {
+   #     balance_vera_re <- filter(balance_vera_re, staff_id == user_id)
+   #     balance_verb <- filter(balance_verb, staff_id == user_id)
+   # }
+
+    if (user_npp %in% npp_dict) {
+        balance_vera_re <- filter(balance_vera_re, npp_id == user_npp)
+        balance_verb <- filter(balance_verb, npp_id == user_npp)
+        msr_staff <- filter(msr_staff, npp_id == user_npp)
+    }
+
+    if (user_role == "ASM") {
+        balance_vera_re <- filter(balance_vera_re, supasm_id == user_id)
+        balance_verb <- filter(balance_verb, supasm_id == user_id)
+    }
+
+    if (user_role == "RSM") {
+        balance_vera_re <- filter(balance_vera_re, suprsm_id == user_id)
+        balance_verb <- filter(balance_verb, suprsm_id == user_id)
+    }
+}
+
+
+## inputs to input-panels
+
+input_years <- 2017:current_year()
+#input_months <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+input_months <- c(1:12)
+
+#input_dates <- unique(c(msr_sales_remote$sales_date, msr_checkin$work_date))
+input_dates <- unique(c(balance_vera_re$work_date, balance_verb$work_date, Sys.Date()))
+
+input_levels <- c("RSM", "ASM", "NPP")
+
+input_RSM <- distinct(select(msr_staff, suprsm_id, suprsm_lb))
+input_RSM <- filter(input_RSM, suprsm_id != "", !is.na(suprsm_id))
+input_RSM <- c("Tất cả" = "All", make_dict(input_RSM$suprsm_lb, input_RSM$suprsm_id))
+
+input_ASM <- distinct(select(msr_staff, supasm_id, supasm_lb))
+input_ASM <- filter(input_ASM, supasm_id != "", !is.na(supasm_id))
+input_ASM <- c("Tất cả" = "All", make_dict(input_ASM$supasm_lb, input_ASM$supasm_id))
+
+input_NPP <- distinct(select(msr_staff, npp_id, npp_lb))
+input_NPP <- filter(input_NPP, npp_id != "", !is.na(npp_id))
+input_NPP <- c("Tất cả" = "All", make_dict(input_NPP$npp_lb, input_NPP$npp_id))
+
+input_SR <- distinct(select(msr_staff, staff_id, staff_lb))
+input_SR <- filter(input_SR, staff_id != "", !is.na(staff_id))
+input_SR <- c("Tất cả" = "All", make_dict(input_SR$staff_lb, input_SR$staff_id))
+
+input_product <- c("Tất cả" = "All", make_dict(msr_product$product_lb, msr_product$product_id))
+
+```
+
+
+```{r server-processing}
+
+cols_name_sku_month <- c("Mã cân đối", 
+                         "Mã NPP", "Tên NPP",
+                         "Mã NT", "Tên NT", 
+                         "Sản phẩm", "Nhãn hiệu", "SKU",  
+                         "Tổng nhập", "Tổng trả lại", "Hiện tồn",
+                         "Giá trị đơn hàng", "Giá trị chiết khấu", "Đã thanh toán", "Công nợ hiện tại")
+
+cols_name_sku_date <- c("Ngày", cols_name_sku_month, "Thời gian cân đối trước")
+
+                 
+cols_name_order_month <- c("Mã cân đối", 
+                 "Mã NPP", "Tên NPP",
+                 "Mã NT", "Tên NT", 
+                 "Đơn hàng đã được cân đối trước", "Đơn hàng cân đối",
+                 "Giá trị đơn hàng", "Giá trị chiết khấu", "Đã thanh toán", "Công nợ hiện tại")
+
+cols_name_order_date <- c("Ngày", cols_name_order_month, "Thời gian cân đối trước")
+                 
+
+
+out_table <- reactive({
+  if (input$report_ip == "select_day") {
+	
+	validate(
+        need(input$date_ip[1] <= input$date_ip[2], 
+             "Khoảng thời gian bắt đầu phải nhỏ hơn thời gian kết thúc"))
+	
+    if (input$balance_ip == "sku_ip") {
+	  
+	  
+      out <- filter(balance_vera_re, work_date <= input$date_ip[2], 
+                    work_date >= input$date_ip[1])
+	  
+	  #validate(need(nrow(out) > 0, ""))
+   	   if (input$level_ip == "RSM") {
+	  out <- out
+	  if (input$RSM_input != "All") {  
+        out <- filter(out, suprsm_id %in% input$RSM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+
+    if (input$level_ip == "ASM") {
+	  out <- out
+	  if (input$ASM_input != "All") {  
+        out <- filter(out, supasm_id %in% input$ASM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+      if (input$level_ip == "NPP") {
+	  out <- out
+	  if (input$NPP_input != "All") {
+		 out <- filter(out, npp_id %in% input$NPP_input)
+		 	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+	  }
+    }
+	  
+	  if (input$product_ip != "All") {
+		 out <- filter(out, product_id %in% input$product_ip)
+		}
+      
+      out <- out %>% select(-month, -product_id, -year)
+	  out <- out[, c(1:17)]
+      names(out) <- cols_name_sku_date
+     
+    } else {
+      out <- filter(balance_verb, work_date <= input$date_ip[2], 
+                    work_date >= input$date_ip[1])
+ 	   if (input$level_ip == "RSM") {
+	  out <- out
+	  if (input$RSM_input != "All") {  
+        out <- filter(out, suprsm_id %in% input$RSM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+
+    if (input$level_ip == "ASM") {
+	  out <- out
+	  if (input$ASM_input != "All") {  
+        out <- filter(out, supasm_id %in% input$ASM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+      if (input$level_ip == "NPP") {
+	  out <- out
+	  if (input$NPP_input != "All") {
+		 out <- filter(out, npp_id %in% input$NPP_input)
+		 	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+	  }
+    }
+	  
+	  #validate(need(nrow(out) > 0, ""))
+      
+      out <- out %>% select(-month, -year)
+	  out <- out[, c(1:13)]
+      names(out) <- cols_name_order_date
+    }
+  } else {
+    
+    #month_ip <- paste0(input$month_ip, "/", input$year_ip)
+    
+    if (input$balance_ip == "sku_ip") {
+      
+    out <- filter(balance_vera_re, month %in% input$month_ip, year %in% input$year_ip)
+	  
+	   if (input$level_ip == "RSM") {
+	  out <- out
+	  if (input$RSM_input != "All") {  
+        out <- filter(out, suprsm_id %in% input$RSM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+
+    if (input$level_ip == "ASM") {
+	  out <- out
+	  if (input$ASM_input != "All") {  
+        out <- filter(out, supasm_id %in% input$ASM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+      if (input$level_ip == "NPP") {
+	  out <- out
+	  if (input$NPP_input != "All") {
+		 out <- filter(out, npp_id %in% input$NPP_input)
+		 	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+	  }
+    }
+	  
+	if (input$product_ip != "All") {
+		 out <- filter(out, product_id %in% input$product_ip)
+		}
+	  
+	  #validate(need(nrow(out) > 0, ""))
+    
+    col_character <- c("received", "return", "inventory", 
+                       "money", "discount", "paymented", "balance_now")
+    
+    out[, col_character] <- sapply(out[, col_character], as.double)
+    
+    out <- out %>% select(-work_date)
+    
+    out <- out %>% 
+        group_by(month, balance_id, product_id) %>% 
+        summarise_if(is.double, sum, na.rm = T) %>% 
+        ungroup()
+    
+    out <- left_join(out, balance_vera_re2, by = c("month", "balance_id", "product_id"))
+    out <- out %>% 
+          select(balance_id, 
+                 npp_id, npp_lb,
+                 store_id, store_lb, 
+                 categ_lb, brand_lb, product_lb, 
+                 received, return, inventory,
+                 money, discount, paymented, balance_now)
+    names(out) <- cols_name_sku_month
+    
+
+    } else {
+      out <- filter(balance_verb, month %in% input$month_ip, year %in% input$year_ip)
+	   if (input$level_ip == "RSM") {
+	  out <- out
+	  if (input$RSM_input != "All") {  
+        out <- filter(out, suprsm_id %in% input$RSM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+
+    if (input$level_ip == "ASM") {
+	  out <- out
+	  if (input$ASM_input != "All") {  
+        out <- filter(out, supasm_id %in% input$ASM_input)
+        	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+		}
+    }
+      if (input$level_ip == "NPP") {
+	  out <- out
+	  if (input$NPP_input != "All") {
+		 out <- filter(out, npp_id %in% input$NPP_input)
+		 	validate(need(nrow(out) > 0, "Không có dữ liệu."))
+	  }
+    }
+	  
+	  #validate(need(nrow(out) > 0, ""))
+    
+      col_character <- c("money", "discount", "paymented", "balance_now")
+    
+      out[, col_character] <- sapply((out[, col_character]), as.double)
+    
+      out <- out %>% select(-work_date)
+      
+      out <- out %>%
+        group_by(month, balance_id) %>%
+        summarise_if(is.double, sum, na.rm = T) %>%
+        ungroup()
+    
+      out <- left_join(out, balance_verb2, by = c("month", "balance_id"))
+    
+      out <- out %>% 
+              select(balance_id, 
+                     npp_id, npp_lb, 
+                     store_id, store_lb,
+                     orderall_balanced, store_orderall,
+                     money, discount, paymented, balance_now)
+                
+      names(out) <- cols_name_order_month
+    }
+    
+  }
+  out
+})
+
+output$out_tbl <- renderDataTable({
+
+    t <- datatable({out_table()},
+                  class = "nowrap stripe hover cell-border",
+                  rownames = FALSE,
+                  options = list(scrollX = T,
+                                 pageLength = 20,
+                                 language = list(url = "//cdn.datatables.net/plug-ins/1.10.7/i18n/Vietnamese.json"))) 
+    
+    if (input$balance_ip == "sku_ip") {
+        t <- t %>%
+            formatCurrency(c("Tổng nhập", "Tổng trả lại", "Hiện tồn",
+                             "Giá trị đơn hàng", "Giá trị chiết khấu", "Đã thanh toán", "Công nợ hiện tại"), currency = "")
+    } else if (input$balance_ip == "code_ip") {
+        t <- t %>%
+            formatCurrency(c("Giá trị đơn hàng", "Giá trị chiết khấu", "Đã thanh toán", "Công nợ hiện tại"), currency = "")
+    }
+    
+    t
+
+})
+
+output$out_xls <- downloadHandler(
+    filename = paste0("234_[NPP]BaoCaoCongNo_", format(Sys.Date(), "%d%m%Y"), ".xlsx"),
+    content = function(file) {
+        ## make workbook
+        # wb <- create_excel_file(out_table(),
+        #                         sheet_name = "Sheet 1",
+        #                         sheet_title = c("Báo cáo công nợ khách hàng"))
+        # ## save workbook to a file
+        # saveWorkbook(wb, file)
+        out <- out_table()
+	    if (input$balance_ip == "sku_ip") {
+		  
+		  cols <- c("Tổng nhập", "Tổng trả lại", "Hiện tồn",
+		            "Giá trị đơn hàng", "Giá trị chiết khấu", "Đã thanh toán", "Công nợ hiện tại")
+		  
+		
+	    } else if (input$balance_ip == "code_ip") {
+		  
+		  cols <- c("Giá trị đơn hàng", "Giá trị chiết khấu", "Đã thanh toán", "Công nợ hiện tại")
+		  
+		
+	    }
+        out[, cols] <- sapply(out[, cols], as.double)
+        out[, cols] <- sapply(out[, cols], number)
+		out[] <- lapply(out[], function(x) gsub("NA", "", x))
+		write_xlsx(out, file, col_names = TRUE)
+    }
+)
+
+
+```
+
+
+Inputs {.sidebar}
+-------------------------------------
+
+```{r input-panel}
+radioButtons(inputId = "report_ip",
+             label = tags$strong("Chọn xem báo cáo: "),
+             choices = c("Ngày" = "select_day",
+                         "Tháng" = "select_month"))
+             
+
+conditionalPanel(
+    condition = "input.report_ip == 'select_day'",
+    dateRangeInput(
+        inputId = "date_ip",
+        label = "Chọn ngày:",
+        min = min(input_dates),
+        max = Sys.Date(),
+        start = min(input_dates),
+        end = Sys.Date(),
+        format = "dd-mm-yyyy",
+        separator = "đến",
+        language = "vi")
+)
+
+conditionalPanel(
+    condition = "input.report_ip == 'select_month'",
+    selectizeInput(
+        inputId = "year_ip",
+        label = tags$strong("Chọn năm:"),
+        choices = input_years,
+        selected = current_year()
+    ),
+    selectizeInput(
+        inputId = "month_ip",
+        label = tags$strong("Chọn tháng:"),
+        choices = input_months,
+        selected = current_month()
+    )
+)
+
+tags$br()
+
+radioButtons(inputId = "balance_ip",
+             label = tags$strong("Chọn loại hình:"),
+             choices = c("SKU (verA)" = "sku_ip",
+                         "Tổng đơn hàng (verB)" = "code_ip"))
+
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.balance_ip == 'sku_ip'",
+      selectizeInput(inputId = "product_ip",
+                  label = tags$strong("Chọn sản phẩm:"),
+                  choices = input_product)
+    )
+  )
+)        
+
+tags$br()
+
+fluidRow(
+  column(
+    width = 12,
+    radioButtons(
+               inputId ="level_ip",
+               label = tags$strong("Chọn cấp bậc:"),
+               choices = input_levels, 
+               selected = "NPP")
+  )
+)
+
+fluidRow(
+  column(
+    width = 12,
+    conditionalPanel(
+      condition = "input.level_ip =='NPP'",
+      selectizeInput(
+                inputId ="NPP_input",
+                label ="Chọn NPP: ",
+                choice = input_NPP)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='ASM'",
+      selectizeInput(
+                inputId ="ASM_input",
+                label ="Chọn ASM: ",
+                choice = input_ASM)
+      ),
+    
+    conditionalPanel(
+      condition = "input.level_ip =='RSM'",
+      selectizeInput(
+                inputId ="RSM_input",
+                label ="Chọn RSM: ",
+                choice = input_RSM)
+      )
+      
+    )
+  )
+
+
+tags$br()
+
+fluidRow(
+    column(
+        width = 1,
+        downloadButton(outputId = "out_xls", "xls")
+	  )
+)
+```
+
+Column
+-------------------------------------
+
+### *Bảng tổng hợp*
+
+```{r output}
+
+fluidRow(
+    column(
+        width = 12,
+        DT::dataTableOutput(outputId = "out_tbl")
+    )
+)
+
+
+```
+
