@@ -1,0 +1,3 @@
+"key","objname","site","family_id","filter","status"
+"1","bw_sample","S038","BW_SAMPLE_FORM_OFFICIAL","bw_language == 'Vietnamese'","2"
+"2","bw_survey","S038","BW_BASELINE_SURVEY_OFFICIAL","country == 'Vietnamese'","2"

@@ -1,0 +1,276 @@
+---
+title: "[BW] Matching Baseline and Sample"
+description: "Filter instance in Survey and concat with information of Sample"
+author: "Real-time Analytics"
+date: "`r format(Sys.time(), '%d-%m-%Y %H:%M:%S')`"
+site: "S038"
+uuid: "[new]"
+type: "shiny"
+run_on_tablet: "yes"
+run_on_server: "yes"
+tags: ""
+runtime: shiny
+output:
+    html_document:
+        theme: flatly
+params:
+    username: '$$FilterValue::get_user_info("##USERNAME##","username")$$'
+    userrole: '$$FilterValue::get_user_info(FilterValue::get_user_info("##USERNAME##","username"), "user_role")$$'
+    fullname: '$$FilterValue::get_user_info(FilterValue::get_user_info("##USERNAME##","username"), "fullname")$$'
+    projcode: '$$FilterValue::get_my_projectcode()$$'
+---
+
+
+
+```{r setup, include=FALSE}
+
+## -----------------------------------------------------------------------------
+## global setup
+
+knitr::opts_chunk$set(echo = FALSE, comment = "", message = FALSE, warning = FALSE)
+options(shiny.sanitize.errors = FALSE, scipen = 999, knitr.kable.NA = "")
+Sys.setlocale(category = "LC_ALL", locale = "en_US.UTF-8")
+
+## -----------------------------------------------------------------------------
+## load packages
+
+RTA::load_packages(readr, tidyr, dplyr, DT, RTA)
+
+## -----------------------------------------------------------------------------
+## import data
+
+if (is_local()) {
+    import_family_data(site = params$projcode)
+    
+    call_history_raw <- get_dm_data("S038", "call_history")
+} else {
+    bw_sample <- get_family_data("S038", "BW_SAMPLE_FORM_OFFICIAL",
+                                 filter = "bw_language == 'Vietnamese'")
+    bw_survey <- get_family_data("S038", "BW_BASELINE_SURVEY_OFFICIAL",
+                                 filter = "country == 'Vietnamese'")
+    
+    call_history_raw <- get_dm_data("S038", "call_history")
+}
+
+
+```
+
+
+```{r tranform-data, include=FALSE}
+## -----------------------------------------------------------------------------
+## lastest instance
+bw_survey <- handle_returned_insts(bw_survey, "instanceID")
+bw_sample <- handle_returned_insts(bw_sample, "instanceID")
+bw_sample <- mutate(bw_sample, bw_sampling = substr(bw_sampling, 1, 41))
+bw_survey <- mutate(bw_survey, bw_baseline = substr(bw_baseline, 1, 41))
+## -----------------------------------------------------------------------------
+## Merge sample and baseline
+
+bw_survey <- left_join(bw_survey[, c("bw_a1", "bw_a2", "bw_a3", "bw_baseline")],
+                       bw_sample,
+                       by = c("bw_baseline" = "bw_sampling"))
+
+## -----------------------------------------------------------------------------
+## Select column
+
+bw_survey <- select(bw_survey,
+                    bw_baseline, submission_date, starttime, endtime, 
+                    username, fullname, bw_language, bw_time_start, 
+                    bw_enum_name, bw_a1, bw_a2, bw_a3, bw_company_name,
+                    bw_company_lb, bw_company_size, 
+                    bw_company_type, bw_city_lb, bw_dist_lb, bw_ward_lb,
+                    bw_respt_name, bw_respt_sex, bw_birth, bw_respt_phone,
+                    bw_respt_fb, bw_zalo_wa, bw_zalo_wa_number, 
+                    bw_respt_depart_fin, bw_respt_part_fin,
+                    bw_respt_postion, bw_respt_code, bw_respt_idpic,
+                    bw_shift, bw_decline_reason, bw_appoint_date)
+
+## -----------------------------------------------------------------------------
+## Replace with na
+
+bw_survey <- replace_with_na(bw_survey)
+
+## -----------------------------------------------------------------------------
+## call history
+
+second_to_period <- function(second) {
+    second <- as.double(second)
+    if (is.na(second) | second < 0) {
+        out <- NA
+    } else {
+        hours <- floor(second / 60 / 60)
+        mins <- floor((second - hours * 60 * 60) / 60)
+        seconds <- round((second - hours * 60 * 60 - mins * 60))
+        
+        hours <- ifelse(nchar(hours) == 1, paste0("0", hours), hours)
+        mins <- ifelse(nchar(mins) == 1, paste0("0", mins), mins)
+        seconds <- ifelse(nchar(seconds) == 1, paste0("0", seconds), seconds)
+        out <- paste0(hours, ":", mins, ":", seconds)
+    }
+    
+    out
+}
+
+call_history <- call_history_raw %>%
+  mutate(adj_telno = gsub("^45", "", receiver_telno),
+         pad_telno = ifelse(adj_telno != "", paste0("0", receiver_telno), adj_telno)) %>%
+  filter(call_status == "ANSWERED")
+
+call_summary <- call_history %>% 
+  mutate(time = as.numeric(lubridate::as.period(lubridate::hms(actual_duration), unit = "sec")),
+         starttime_ed = lubridate::dmy_hm(starttime)) %>% 
+  group_by(ip_acc, pad_telno) %>% 
+  mutate(time_start = min(starttime_ed, na.rm = TRUE),
+         time_start = format(time_start, format = "%d/%m/%Y %H:%M"),
+         time_all = sum(time, na.rm = TRUE),
+         time_all = second_to_period(time_all)) %>% 
+  ungroup() %>% 
+  filter(!duplicated(paste0(pad_telno, time_start, ip_acc))) %>% 
+  group_by(pad_telno) %>% 
+  mutate(time_all = paste0(ip_display, ": ", time_all, collapse = ", ")) %>% 
+  ungroup() %>% 
+  filter(!duplicated(pad_telno))
+  
+
+bw_survey_have_call <- bw_survey %>%
+ filter(bw_respt_phone %in% call_history$pad_telno) #|
+          # bw_respt_phone %in% call_history$adj_telno |
+          # bw_respt_phone %in% call_history$receiver_telno)
+
+bw_survey <- bw_survey %>% 
+  mutate(calling = ifelse(bw_baseline %in% bw_survey_have_call$bw_baseline & 
+                            bw_respt_phone %in% bw_survey_have_call$bw_respt_phone, "Có", "Không")) %>% 
+  left_join(., select(call_summary, pad_telno, time_all, time_start), 
+            by = c("bw_respt_phone" = "pad_telno")) #%>% 
+  # left_join(., select(call_summary, adj_telno, time_all_adj = time_all, time_start_adj = time_start), 
+  #           by = c("bw_respt_phone" = "adj_telno")) %>% 
+  # left_join(., select(call_summary, receiver_telno, time_all, time_start), 
+  #           by = c("bw_respt_phone" = "receiver_telno"))
+
+
+
+## -----------------------------------------------------------------------------
+## Make dict
+
+company_type_dict <- make_dict(c(1, 2), c("BW", "Non-BW"))
+company_size_dict <- make_dict(c(1:5),
+                               c("<1000", "1000-5000", ">5000",
+                                 "<1000", "<1000"))
+shift_dict <- make_dict(c(1:3), c("Sáng", "Chiều", "Tối"))
+position_dict <- make_dict(c(1:2), c("Đứng máy may", "Khác"))
+status_dict <- make_dict(c(1:3), c("Accepted", "Declined", "Contact again"))
+sex_dict <- make_dict(c(1, 2), c("Nữ", "Nam"))
+edu_dict <- make_dict(c(1, 2, 3, 4, 
+                        5, 6, 98, 99),
+                      c("Không có", "Tiểu học", "Trung học cơ sở", "Trung học phổ thông", 
+                        "Đào tạo nghề", "Bằng cấp cao", "Không biết", "Không muốn trả lời"))
+yesno_dict <- make_dict(c(1, 2),
+                        c("Có", "Không"))
+shift_lb <- make_dict(c(1, 2, 3),
+                      c("Sáng", "Chiều", "Tối"))
+
+name_dict <- make_dict(c("bw_baseline", "bw_time_start", "bw_enum_name", "bw_a1", 
+                         "bw_a2", "bw_a3", "bw_company_name", "bw_company_lb", 
+                         "bw_company_size", "bw_company_type", "bw_city_lb", "bw_dist_lb", 
+                         "bw_ward_lb", "bw_respt_name", "bw_respt_sex", "bw_birth", 
+                         "bw_respt_phone", "bw_respt_fb", "bw_zalo_wa", "bw_zalo_wa_number",
+                         "bw_respt_depart_fin", "bw_respt_part_fin",
+                         "bw_respt_postion", "bw_respt_code", "bw_respt_idpic",
+                         "bw_shift", "bw_decline_reason", "bw_appoint_date", 
+                         "calling", "time_all", "time_start"),
+                       c("instanceID", "Ngày giờ bđ lấy mẫu", "ĐTV", "Giới tính (Survey)",
+                         "Tuổi", "Trình độ học vấn", "Mã công ty", "Tên công ty", 
+                         "Quy mô ct", "BW hay non-BW", "Tỉnh", "Huyện",
+                         "Xã", "Tên người trả lời", "Giới tính người trả lời", "Năm sinh",
+                         "SĐT", "Fb", "Có dùng Zalo k", "Số Zalo", 
+                         "Phân xưởng", "Chuyền",
+                         "Vị trí", "Mã thẻ", "Hình thẻ",
+                         "Ca làm việc", "Lý do", "Ngày giờ hẹn lại",
+                         "Cuộc gọi", "Tổng thời gian thực gọi", "Thời gian bắt đầu gọi"))
+
+
+## -----------------------------------------------------------------------------
+## Encode
+
+bw_survey <- mutate(bw_survey,
+                    date = as.Date(substr(submission_date, 1, 10)),
+                    bw_a1 = encode(bw_a1, sex_dict),
+                    bw_a3 = encode(bw_a3, edu_dict),
+                    bw_company_size = encode(bw_company_size, company_size_dict),
+                    bw_company_type = encode(bw_company_type, company_type_dict),
+                    bw_respt_sex = encode(bw_respt_sex, sex_dict),
+                    bw_zalo_wa = encode(bw_zalo_wa, yesno_dict),
+                    bw_respt_postion = encode(bw_respt_postion, position_dict),
+                    bw_shift = encode(bw_shift, shift_dict))
+
+names(bw_survey) <- encode(names(bw_survey), name_dict)
+
+## -----------------------------------------------------------------------------
+## Input
+
+input_dates <- unique(bw_survey$date)
+input_dates <- input_dates[!is.na(input_dates)]
+
+```
+
+
+
+```{r server-processing, include=FALSE}
+
+re_survey <- reactive({
+    date_start <- input$date[1]
+    date_end <- input$date[2]
+    
+    out <- filter(bw_survey, 
+                  date >= date_start, 
+                  date <= date_end)
+    return(out)
+})
+
+output$excel_report <- downloadHandler(
+    filename = paste0("Matching-Sample-Baseline_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx"),
+    
+    content = function(file) {
+        writexl::write_xlsx(re_survey(), file)
+    }
+)
+
+```
+
+--------------------------------------------------------------------------------
+
+```{r ui}
+
+
+fluidRow(
+    
+    column(
+        width = 6,
+        dateRangeInput(
+            inputId = "date",
+            label = "Select Date",
+            min = min(input_dates),
+            max = max(input_dates),
+            start = min(input_dates),
+            end = max(input_dates),
+            format = "dd-mm-yyyy"
+        )
+    ),
+    
+    column(
+        width = 4,
+        shiny::tags$br(),
+        downloadButton("excel_report", "XlS")
+    )
+)
+
+```
+
+
+```{r datatable}
+
+renderDataTable(re_survey(),
+                options = list(scrollX = TRUE,
+                               scrollY = "500px"))
+
+```
